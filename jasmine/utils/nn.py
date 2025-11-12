@@ -43,6 +43,23 @@ def _get_spatiotemporal_positional_encoding(d_model: int, max_len: int = 5000):
     return _encode
 
 
+def rope(x, ts=None, inverse=False, maxlen=4096):
+  B, T, _, D = x.shape
+  if ts is None:
+    ts = jnp.ones(B, jnp.int32)[:, None] * jnp.arange(T)[None, :]  # [B, T]
+  assert ts.shape == (B, T), (ts.shape, (B, T))
+  if inverse:
+    ts = -ts
+  freq_exponents = (2.0 / D) * jnp.arange(D // 2)  # [D/2]
+  timescale = maxlen ** freq_exponents
+  radians = ts[:, :, None] / timescale[None, None, :]  # [B, T, D/2]
+  radians = radians[..., None, :].astype(x.dtype)  # [B, T, 1, D/2]
+  sin, cos = jnp.sin(radians), jnp.cos(radians)
+  x1, x2 = jnp.split(x, 2, axis=-1)  # [B, T, H, D/2]
+  res = jnp.concatenate([x1 * cos - x2 * sin, x2 * cos + x1 * sin], axis=-1)
+  return res
+
+
 class AxialBlock(nnx.Module):
     """Axial transformer block"""
 
