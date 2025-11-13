@@ -252,9 +252,9 @@ class AxialTransformer(nnx.Module):
             self.model_dim, max_len=max_len
         )
 
-        self.blocks = []
+        _blocks = []
         for _ in range(self.num_blocks):
-            self.blocks.append(
+            _blocks.append(
                 AxialBlock(
                     dim=self.model_dim,
                     ffn_dim=self.ffn_dim,
@@ -271,6 +271,7 @@ class AxialTransformer(nnx.Module):
                     decode=self.decode,
                 )
             )
+        self.blocks = nnx.List(_blocks)
 
         self.output_dense = nnx.Linear(
             in_features=self.model_dim,

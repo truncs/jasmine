@@ -170,9 +170,7 @@ def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
         prefetch_buffer_size=1,
         seed=args.seed,
     )
-    initial_state = grain_dataloader._create_initial_state()
-    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
-    return grain_iterator
+    return grain_dataloader
 
 
 def build_checkpoint_manager(args: Args) -> Optional[ocp.CheckpointManager]:
@@ -266,7 +264,11 @@ def restore_checkpoint_if_needed(
 
 
 def main(args: Args) -> None:
-    jax.distributed.initialize()
+    jax.distributed.initialize(
+        coordinator_address="localhost:1234",
+        num_processes=1,
+        process_id=0
+    )
     num_devices = jax.device_count()
     if num_devices == 0:
         raise ValueError("No JAX devices found.")
