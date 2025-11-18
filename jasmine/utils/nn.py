@@ -281,10 +281,14 @@ class AxialTransformer(nnx.Module):
             rngs=rngs,
         )
 
-    def __call__(self, x_BTNI: jax.Array) -> jax.Array:
-        x_BTNI = self.input_norm1(x_BTNI)
-        x_BTNM = self.input_dense(x_BTNI)
-        x_BTNM = self.input_norm2(x_BTNM)
+    def __call__(self, x_BTHWI: jax.Array) -> jax.Array:
+
+        x_BTNI = self.input_norm1(x_BTHWI)
+        x_BTHWM = self.input_dense(x_BTHWI)
+        x_BTHWM = self.input_norm2(x_BTHWM)
+
+        B, T, H, W, M = x_BTHWM.shape
+        x_BTNM = x_BTHWM.reshape((B, T, H*W, M))
         x_BTNM = self.pos_enc(x_BTNM)
         for block in self.blocks:
             x_BTNM = block(x_BTNM)
@@ -292,7 +296,7 @@ class AxialTransformer(nnx.Module):
         x_BTNV = self.output_dense(x_BTNM)
         if self.sow_logits:
             self.sow(nnx.Intermediate, "logits", x_BTNV)
-        return x_BTNV
+        return x_BTNV.reshape((B, T, H, W, -1))
 
 
 def normalize(x: jax.Array) -> jax.Array:
