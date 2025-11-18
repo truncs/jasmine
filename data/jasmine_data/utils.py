@@ -8,6 +8,7 @@ def save_chunks(file_idx, chunks_per_file, output_dir, obs_chunks, act_chunks=No
     os.makedirs(output_dir, exist_ok=True)
 
     metadata = []
+    print(f'Length of the obs chunks {len(obs_chunks)}')
     while len(obs_chunks) >= chunks_per_file:
         chunk_batch = obs_chunks[:chunks_per_file]
         obs_chunks = obs_chunks[chunks_per_file:]
@@ -30,6 +31,7 @@ def save_chunks(file_idx, chunks_per_file, output_dir, obs_chunks, act_chunks=No
                     act_chunk_batch[idx]
                 ), f"Observation data length and action sequence length do not match: {len(chunk)} != {len(act_chunk_batch[idx])}"
                 chunk_record["actions"] = act_chunk_batch[idx]
+
             writer.write(pickle.dumps(chunk_record))
         writer.close()
         file_idx += 1

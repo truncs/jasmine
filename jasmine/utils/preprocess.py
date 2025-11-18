@@ -3,12 +3,18 @@ import jax
 import jax.numpy as jnp
 
 
-def patchify(videos: jax.Array, size: int) -> jax.Array:
+def patchify(videos: jax.Array, size: int, collapse=True) -> jax.Array:
     B, T, H, W, C = videos.shape
     x = jnp.pad(videos, ((0, 0), (0, 0), (0, -H % size), (0, -W % size), (0, 0)))
-    return einops.rearrange(
-        x, "b t (hn hp) (wn wp) c -> b t (hn wn) (hp wp c)", hp=size, wp=size
-    )
+
+    if collapse:
+        return einops.rearrange(
+            x, "b t (hn hp) (wn wp) c -> b t (hn wn) (hp wp c)", hp=size, wp=size
+        )
+    else:
+        return einops.rearrange(
+            x, "b t (hn hp) (wn wp) c -> b t hn wn (hp wp c)", hp=size, wp=size
+        )
 
 
 def unpatchify(patches: jax.Array, size: int, h_out: int, w_out: int) -> jax.Array:

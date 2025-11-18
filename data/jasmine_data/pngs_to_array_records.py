@@ -38,6 +38,7 @@ def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_widt
 
         # Downsample indices
         n_total = len(png_files)
+
         if original_fps == target_fps:
             selected_indices = np.arange(n_total)
         else:

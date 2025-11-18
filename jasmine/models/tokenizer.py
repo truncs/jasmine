@@ -114,6 +114,7 @@ class TokenizerVQVAE(nnx.Module):
     ) -> Dict[str, jax.Array]:
         # --- Preprocess + encode ---
         B, T = videos.shape[:2]
+        
         patch_BTNP = patchify(videos, self.patch_size)
         N = patch_BTNP.shape[2]
         x_BTNL = self.encoder(patch_BTNP)
@@ -221,15 +222,18 @@ class TokenizerMAE(nnx.Module):
     def __call__(
         self, batch: Dict[str, jax.Array], training: bool = True
     ) -> Dict[str, jax.Array]:
-        H, W = batch["videos"].shape[2:4]
+        B, T, H, W = batch["videos"].shape[:4]
         videos_BTHWC = batch["videos"]
         outputs = self.mask_and_encode(videos_BTHWC, batch["rng"], training)
-        z_BTNL = outputs["z"]
-        recon_BTHWC = self.decoder(z_BTNL)
+        z_BTHWL = outputs["z"]
+        recon_BTHWC = self.decoder(z_BTHWL)
         recon_BTHWC = recon_BTHWC.astype(jnp.float32)
         recon_BTHWC = nnx.sigmoid(recon_BTHWC)
         recon_BTHWC = recon_BTHWC.astype(self.dtype)
-        recon_BTHWC = unpatchify(recon_BTHWC, self.patch_size, H, W)
+
+        C = recon_BTHWC.shape[-1]
+        recon_BTNC = recon_BTHWC.reshape((B, T, -1, C))
+        recon_BTHWC = unpatchify(recon_BTNC, self.patch_size, H, W)
         outputs["recon"] = recon_BTHWC
         return outputs
 
@@ -238,7 +242,11 @@ class TokenizerMAE(nnx.Module):
     ) -> Dict[str, jax.Array]:
         # --- Preprocess videos ---
         B, T = videos.shape[:2]
-        patch_BTNP = patchify(videos, self.patch_size)
+        patch_BTHWP = patchify(videos, self.patch_size, collapse=False)
+
+        H, W = patch_BTHWP.shape[2:4]
+
+        patch_BTNP = patch_BTHWP.reshape((B, T, H*W, -1))
         N = patch_BTNP.shape[2]
 
         # --- Randomly mask patches ---
@@ -257,10 +265,11 @@ class TokenizerMAE(nnx.Module):
             )
 
         # --- Encode ---
-        z_BTNL = self.encoder(patch_BTNP)
+        patch_BTHWP = patch_BTNP.reshape((B, T, H, W, -1))
+        z_BTHWL = self.encoder(patch_BTHWP)
         # squeeze latents through tanh as described in Dreamer 4 section 3.1
-        z_BTNL = nnx.tanh(z_BTNL)
-        outputs = dict(z=z_BTNL)
+        z_BTHWL = nnx.tanh(z_BTHWL)
+        outputs = dict(z=z_BTHWL)
         return outputs
 
     def decode(self, z_BTNL: jax.Array, video_hw: Tuple[int, int]) -> jax.Array:
