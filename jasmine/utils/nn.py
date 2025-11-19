@@ -75,6 +75,87 @@ def rope2d(x_BTHWM):
     return jnp.concat([x1_BTHWI, x2_BTHWI], axis=-1)
 
 
+class AxialSpatialBlock(nnx.Module):
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        dropout: float,
+        param_dtype: jnp.dtype,
+        dtype: jnp.dtype,
+        use_flash_attention: bool,
+        rngs: nnx.Rngs,
+        spatial_causal: bool,
+        sow_weights: bool,
+        decode: bool,
+    ):
+
+        self.dim = dim
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.param_dtype = param_dtype
+        self.dtype = dtype
+        self.use_flash_attention = use_flash_attention
+        self.spatial_causal = spatial_causal
+        self.sow_weights = sow_weights
+        self.decode = decode
+
+        self.spatial_norm = nnx.LayerNorm(
+            num_features=self.dim,
+            param_dtype=self.param_dtype,
+            dtype=self.param_dtype,  # layer norm in full precision
+            rngs=rngs,
+        )
+
+        self.qknorm = nnx.LayerNorm(
+            num_features=self.dim,
+            param_dtype=self.param_dtype,
+            dtype=self.param_dtype,  # layer norm in full precision
+            rngs=rngs,
+        )
+
+        self.qkv_proj = nnx.Linear(
+            in_features=self.dim,
+            out_features=self.dim*3,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+
+        self.spatial_attention = nnx.MultiHeadAttention(
+            num_heads=self.num_heads,
+            in_features=self.dim,
+            qkv_features=self.dim,
+            dropout_rate=self.dropout,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            attention_fn=_create_flash_attention_fn(
+                self.use_flash_attention, is_causal=self.spatial_causal
+            ),
+            rngs=rngs,
+            decode=self.decode,
+        )
+
+    @nnx.remat
+    def __call__(self, x_BTHWM: jax.Array) -> jax.Array:
+        # --- Spatial attention ---
+        B, T, H, W, M = x_BTHWM.shape
+        z_BTHWM = self.spatial_norm(x_BTHWM)
+
+        q_BTHWM, k_BTHWM, v_BTHWM = jnp.split(self.qkv_proj(z_BTHWM), 3, -1)
+
+        q_BTNM = rope2d(self.qknorm(q_BTHWM)).reshape((B, T, -1, M))
+        k_BTNM = rope2d(self.qknorm(k_BTHWM)).reshape((B, T, -1, M))
+        v_BTNM = v_BTHWM.reshape((B, T, -1, M))
+
+        z_BTNM = self.spatial_attention(
+            q_BTNM, k_BTNM, v_BTNM, sow_weights=self.sow_weights)
+        x_BTHWM = x_BTHWM + z_BTNM.reshape((B, T, H, W, M))
+
+        return x_BTHWM
+
+
 class AxialBlock(nnx.Module):
     """Axial transformer block"""
 
@@ -106,24 +187,33 @@ class AxialBlock(nnx.Module):
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
         self.decode = decode
-        self.spatial_norm = nnx.LayerNorm(
+
+
+        _blocks = []
+
+        for _ in range(3):
+            _blocks.append(
+                AxialSpatialBlock(
+                    dim=self.dim,
+                    num_heads=self.num_heads,
+                    dropout=self.dropout,
+                    param_dtype=self.param_dtype,
+                    dtype=self.dtype,
+                    use_flash_attention=self.use_flash_attention,
+                    spatial_causal=self.spatial_causal,
+                    sow_weights=self.sow_weights,
+                    decode=self.decode,
+                    rngs=rngs
+                )
+            )
+
+        self.spatial_blocks = nnx.List(_blocks)
+
+        self.temporal_norm = nnx.LayerNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
             dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
-        )
-        self.spatial_attention = nnx.MultiHeadAttention(
-            num_heads=self.num_heads,
-            in_features=self.dim,
-            qkv_features=self.dim,
-            dropout_rate=self.dropout,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            attention_fn=_create_flash_attention_fn(
-                self.use_flash_attention, is_causal=self.spatial_causal
-            ),
-            rngs=rngs,
-            decode=self.decode,
         )
 
         self.qknorm = nnx.LayerNorm(
@@ -134,28 +224,6 @@ class AxialBlock(nnx.Module):
         )
 
         self.qkv_proj = nnx.Linear(
-            in_features=self.dim,
-            out_features=self.dim*3,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            rngs=rngs,
-        )
-
-        self.temporal_norm = nnx.LayerNorm(
-            num_features=self.dim,
-            param_dtype=self.param_dtype,
-            dtype=self.param_dtype,  # layer norm in full precision
-            rngs=rngs,
-        )
-
-        self.temporal_qknorm = nnx.LayerNorm(
-            num_features=self.dim,
-            param_dtype=self.param_dtype,
-            dtype=self.param_dtype,  # layer norm in full precision
-            rngs=rngs,
-        )
-
-        self.temporal_qkv_proj = nnx.Linear(
             in_features=self.dim,
             out_features=self.dim*3,
             param_dtype=self.param_dtype,
@@ -201,18 +269,10 @@ class AxialBlock(nnx.Module):
     @nnx.remat
     def __call__(self, x_BTHWM: jax.Array) -> jax.Array:
         # --- Spatial z ---
-        z_BTHWM = self.spatial_norm(x_BTHWM)
+        B, T, H, W, M = x_BTHWM.shape
+        for block in self.spatial_blocks:
+            x_BTHWM = block(x_BTHWM)
 
-        q_BTHWM, k_BTHWM, v_BTHWM = jnp.split(self.qkv_proj(z_BTHWM), 3, -1)
-        B, T, H, W, M = q_BTHWM.shape
-
-        q_BTNM = rope2d(self.qknorm(q_BTHWM)).reshape((B, T, -1, M))
-        k_BTNM = rope2d(self.qknorm(k_BTHWM)).reshape((B, T, -1, M))
-        v_BTNM = v_BTHWM.reshape((B, T, -1, M))
-
-        z_BTNM = self.spatial_attention(
-            q_BTNM, k_BTNM, v_BTNM, sow_weights=self.sow_weights)
-        x_BTHWM = x_BTHWM + z_BTNM.reshape((B, T, H, W, M))
 
         # --- Temporal attention ---
         x_BTNM = x_BTHWM.reshape((B, T, -1, M))
@@ -221,9 +281,9 @@ class AxialBlock(nnx.Module):
         z_BNTM = self.temporal_norm(x_BNTM)
 
         q_BNTM, k_BNTM, v_BNTM = jnp.split(
-            self.temporal_qkv_proj(z_BNTM), 3, -1)
-        q_BNTM = self.temporal_qknorm(q_BNTM)
-        k_BNTM = self.temporal_qknorm(k_BNTM)
+            self.qkv_proj(z_BNTM), 3, -1)
+        q_BNTM = self.qknorm(q_BNTM)
+        k_BNTM = self.qknorm(k_BNTM)
 
         # import ipdb; ipdb.set_trace()
         q_BNTM = rope(q_BNTM)
