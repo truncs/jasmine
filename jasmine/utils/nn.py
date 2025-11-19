@@ -44,20 +44,35 @@ def _get_spatiotemporal_positional_encoding(d_model: int, max_len: int = 5000):
 
 
 def rope(x, ts=None, inverse=False, maxlen=4096):
-  B, T, _, D = x.shape
-  if ts is None:
-    ts = jnp.ones(B, jnp.int32)[:, None] * jnp.arange(T)[None, :]  # [B, T]
-  assert ts.shape == (B, T), (ts.shape, (B, T))
-  if inverse:
-    ts = -ts
-  freq_exponents = (2.0 / D) * jnp.arange(D // 2)  # [D/2]
-  timescale = maxlen ** freq_exponents
-  radians = ts[:, :, None] / timescale[None, None, :]  # [B, T, D/2]
-  radians = radians[..., None, :].astype(x.dtype)  # [B, T, 1, D/2]
-  sin, cos = jnp.sin(radians), jnp.cos(radians)
-  x1, x2 = jnp.split(x, 2, axis=-1)  # [B, T, H, D/2]
-  res = jnp.concatenate([x1 * cos - x2 * sin, x2 * cos + x1 * sin], axis=-1)
-  return res
+    B, T, _, D = x.shape
+    if ts is None:
+        ts = jnp.ones(B, jnp.int32)[:, None] * jnp.arange(T)[None, :]  # [B, T]
+    assert ts.shape == (B, T), (ts.shape, (B, T))
+    if inverse:
+        ts = -ts
+    freq_exponents = (2.0 / D) * jnp.arange(D // 2)  # [D/2]
+    timescale = maxlen ** freq_exponents
+    radians = ts[:, :, None] / timescale[None, None, :]  # [B, T, D/2]
+    radians = radians[..., None, :].astype(x.dtype)  # [B, T, 1, D/2]
+    sin, cos = jnp.sin(radians), jnp.cos(radians)
+    x1, x2 = jnp.split(x, 2, axis=-1)  # [B, T, H, D/2]
+    res = jnp.concatenate([x1 * cos - x2 * sin, x2 * cos + x1 * sin], axis=-1)
+    return res
+
+
+def rope2d(x_BTHWM):
+    B, T, H, W, M = x_BTHWM.shape
+    x1_BTHWI, x2_BTHWI = jnp.split(x_BTHWM, 2, axis=-1)
+
+    I = x1_BTHWI.shape[-1]
+    x1_BHNI = x1_BTHWI.swapaxes(1, 2).reshape((B, H, -1, I))
+    x1_BHNI = rope(x1_BHNI, maxlen=H)
+    x1_BTHWI = x1_BHNI.reshape((B, H, T, W, I)).swapaxes(1, 2)
+
+    x2_BWNI = x2_BTHWI.swapaxes(1, 3).reshape((B, W, -1, I))
+    x2_BWNI = rope(x2_BWNI, maxlen=W)
+    x2_BTHWI = x2_BWNI.reshape((B, W, H, T, I)).swapaxes(1, 3)
+    return jnp.concat([x1_BTHWI, x2_BTHWI], axis=-1)
 
 
 class AxialBlock(nnx.Module):
@@ -191,24 +206,31 @@ class AxialBlock(nnx.Module):
         q_BTHWM, k_BTHWM, v_BTHWM = jnp.split(self.qkv_proj(z_BTHWM), 3, -1)
         B, T, H, W, M = q_BTHWM.shape
 
-        q_BTNM = self.qknorm(q_BTHWM).reshape((B, T, -1, M))
-        k_BTNM = self.qknorm(k_BTHWM).reshape((B, T, -1, M))
+        q_BTNM = rope2d(self.qknorm(q_BTHWM)).reshape((B, T, -1, M))
+        k_BTNM = rope2d(self.qknorm(k_BTHWM)).reshape((B, T, -1, M))
         v_BTNM = v_BTHWM.reshape((B, T, -1, M))
 
-        z_BTNM = self.spatial_attention(q_BTNM, k_BTNM, v_BTNM, sow_weights=self.sow_weights)
+        z_BTNM = self.spatial_attention(
+            q_BTNM, k_BTNM, v_BTNM, sow_weights=self.sow_weights)
         x_BTHWM = x_BTHWM + z_BTNM.reshape((B, T, H, W, M))
 
         # --- Temporal attention ---
         x_BTNM = x_BTHWM.reshape((B, T, -1, M))
-        x_BNTM = x_BTHWM.swapaxes(1, 2)
+        x_BNTM = x_BTNM.swapaxes(1, 2)
 
         z_BNTM = self.temporal_norm(x_BNTM)
 
-        q_BNTM, k_BNTM, v_BNTM = jnp.split(self.temporal_qkv_proj(z_BNTM), 3, -1)
+        q_BNTM, k_BNTM, v_BNTM = jnp.split(
+            self.temporal_qkv_proj(z_BNTM), 3, -1)
         q_BNTM = self.temporal_qknorm(q_BNTM)
         k_BNTM = self.temporal_qknorm(k_BNTM)
-        
-        z_BNTM = self.temporal_attention(q_BNTM, k_BNTM, v_BNTM, sow_weights=self.sow_weights)
+
+        # import ipdb; ipdb.set_trace()
+        q_BNTM = rope(q_BNTM)
+        k_BNTM = rope(k_BNTM)
+
+        z_BNTM = self.temporal_attention(
+            q_BNTM, k_BNTM, v_BNTM, sow_weights=self.sow_weights)
         x_BNTM = x_BNTM + z_BNTM
         x_BTNM = x_BNTM.swapaxes(1, 2)
 
@@ -335,7 +357,7 @@ class AxialTransformer(nnx.Module):
 
         B, T, H, W, M = x_BTHWM.shape
         x_BTNM = x_BTHWM.reshape((B, T, H*W, M))
-        x_BTNM = self.pos_enc(x_BTNM)
+        # x_BTNM = self.pos_enc(x_BTNM)
 
         x_BTHWM = x_BTNM.reshape((B, T, H, W, M))
         for block in self.blocks:

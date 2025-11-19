@@ -246,7 +246,7 @@ class TokenizerMAE(nnx.Module):
         N = H*W
 
         patch_BTNP = patch_BTHWP.reshape((B, T, N, -1))
-        
+
         # --- Randomly mask patches ---
         if training:
             _rng_prob, _rng_mask = jax.random.split(rng, 2)
