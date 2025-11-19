@@ -66,11 +66,11 @@ def rope2d(x_BTHWM):
 
     I = x1_BTHWI.shape[-1]
     x1_BHNI = x1_BTHWI.swapaxes(1, 2).reshape((B, H, -1, I))
-    x1_BHNI = rope(x1_BHNI, maxlen=H)
+    x1_BHNI = rope(x1_BHNI, maxlen=H+1)
     x1_BTHWI = x1_BHNI.reshape((B, H, T, W, I)).swapaxes(1, 2)
 
     x2_BWNI = x2_BTHWI.swapaxes(1, 3).reshape((B, W, -1, I))
-    x2_BWNI = rope(x2_BWNI, maxlen=W)
+    x2_BWNI = rope(x2_BWNI, maxlen=W+1)
     x2_BTHWI = x2_BWNI.reshape((B, W, H, T, I)).swapaxes(1, 3)
     return jnp.concat([x1_BTHWI, x2_BTHWI], axis=-1)
 
