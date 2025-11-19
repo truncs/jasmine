@@ -111,12 +111,43 @@ class AxialBlock(nnx.Module):
             decode=self.decode,
         )
 
+        self.qknorm = nnx.LayerNorm(
+            num_features=self.dim,
+            param_dtype=self.param_dtype,
+            dtype=self.param_dtype,  # layer norm in full precision
+            rngs=rngs,
+        )
+
+        self.qkv_proj = nnx.Linear(
+            in_features=self.dim,
+            out_features=self.dim*3,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+
         self.temporal_norm = nnx.LayerNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
             dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
         )
+
+        self.temporal_qknorm = nnx.LayerNorm(
+            num_features=self.dim,
+            param_dtype=self.param_dtype,
+            dtype=self.param_dtype,  # layer norm in full precision
+            rngs=rngs,
+        )
+
+        self.temporal_qkv_proj = nnx.Linear(
+            in_features=self.dim,
+            out_features=self.dim*3,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+
         self.temporal_attention = nnx.MultiHeadAttention(
             num_heads=self.num_heads,
             in_features=self.dim,
@@ -153,16 +184,31 @@ class AxialBlock(nnx.Module):
         )
 
     @nnx.remat
-    def __call__(self, x_BTNM: jax.Array) -> jax.Array:
-        # --- Spatial attention ---
-        z_BTNM = self.spatial_norm(x_BTNM)
-        z_BTNM = self.spatial_attention(z_BTNM, sow_weights=self.sow_weights)
-        x_BTNM = x_BTNM + z_BTNM
+    def __call__(self, x_BTHWM: jax.Array) -> jax.Array:
+        # --- Spatial z ---
+        z_BTHWM = self.spatial_norm(x_BTHWM)
+
+        q_BTHWM, k_BTHWM, v_BTHWM = jnp.split(self.qkv_proj(z_BTHWM), 3, -1)
+        B, T, H, W, M = q_BTHWM.shape
+
+        q_BTNM = self.qknorm(q_BTHWM).reshape((B, T, -1, M))
+        k_BTNM = self.qknorm(k_BTHWM).reshape((B, T, -1, M))
+        v_BTNM = v_BTHWM.reshape((B, T, -1, M))
+
+        z_BTNM = self.spatial_attention(q_BTNM, k_BTNM, v_BTNM, sow_weights=self.sow_weights)
+        x_BTHWM = x_BTHWM + z_BTNM.reshape((B, T, H, W, M))
 
         # --- Temporal attention ---
-        x_BNTM = x_BTNM.swapaxes(1, 2)
+        x_BTNM = x_BTHWM.reshape((B, T, -1, M))
+        x_BNTM = x_BTHWM.swapaxes(1, 2)
+
         z_BNTM = self.temporal_norm(x_BNTM)
-        z_BNTM = self.temporal_attention(z_BNTM, sow_weights=self.sow_weights)
+
+        q_BNTM, k_BNTM, v_BNTM = jnp.split(self.temporal_qkv_proj(z_BNTM), 3, -1)
+        q_BNTM = self.temporal_qknorm(q_BNTM)
+        k_BNTM = self.temporal_qknorm(k_BNTM)
+        
+        z_BNTM = self.temporal_attention(q_BNTM, k_BNTM, v_BNTM, sow_weights=self.sow_weights)
         x_BNTM = x_BNTM + z_BNTM
         x_BTNM = x_BNTM.swapaxes(1, 2)
 
@@ -174,7 +220,7 @@ class AxialBlock(nnx.Module):
         x_BTNM = x_BTNM + z_BTNM
         if self.sow_activations:
             self.sow(nnx.Intermediate, "activations", x_BTNM)
-        return x_BTNM
+        return x_BTNM.reshape((B, T, H, W, -1))
 
 
 class AxialTransformer(nnx.Module):
@@ -290,13 +336,15 @@ class AxialTransformer(nnx.Module):
         B, T, H, W, M = x_BTHWM.shape
         x_BTNM = x_BTHWM.reshape((B, T, H*W, M))
         x_BTNM = self.pos_enc(x_BTNM)
-        for block in self.blocks:
-            x_BTNM = block(x_BTNM)
 
-        x_BTNV = self.output_dense(x_BTNM)
+        x_BTHWM = x_BTNM.reshape((B, T, H, W, M))
+        for block in self.blocks:
+            x_BTHWM = block(x_BTHWM)
+
+        x_BTHWV = self.output_dense(x_BTHWM)
         if self.sow_logits:
             self.sow(nnx.Intermediate, "logits", x_BTNV)
-        return x_BTNV.reshape((B, T, H, W, -1))
+        return x_BTHWV.reshape((B, T, H, W, -1))
 
 
 def normalize(x: jax.Array) -> jax.Array:
