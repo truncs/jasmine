@@ -7,7 +7,7 @@ def patchify(videos: jax.Array, size: int) -> jax.Array:
     B, T, H, W, C = videos.shape
     x = jnp.pad(videos, ((0, 0), (0, 0), (0, -H % size), (0, -W % size), (0, 0)))
     return einops.rearrange(
-        x, "b t (hn hp) (wn wp) c -> b t (hn wn) (hp wp c)", hp=size, wp=size
+        x, "b t (hn hp) (wn wp) c -> b t hn wn (hp wp c)", hp=size, wp=size
     )
 
 

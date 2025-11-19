@@ -224,12 +224,15 @@ class TokenizerMAE(nnx.Module):
         H, W = batch["videos"].shape[2:4]
         videos_BTHWC = batch["videos"]
         outputs = self.mask_and_encode(videos_BTHWC, batch["rng"], training)
-        z_BTNL = outputs["z"]
-        recon_BTHWC = self.decoder(z_BTNL)
+        z_BTHWL = outputs["z"]
+        recon_BTHWC = self.decoder(z_BTHWL)
         recon_BTHWC = recon_BTHWC.astype(jnp.float32)
         recon_BTHWC = nnx.sigmoid(recon_BTHWC)
         recon_BTHWC = recon_BTHWC.astype(self.dtype)
-        recon_BTHWC = unpatchify(recon_BTHWC, self.patch_size, H, W)
+
+        B, T, Hp, Wp, C = recon_BTHWC.shape
+        recon_BTNC = recon_BTHWC.reshape((B, T, Hp*Wp, C))
+        recon_BTHWC = unpatchify(recon_BTNC, self.patch_size, H, W)
         outputs["recon"] = recon_BTHWC
         return outputs
 
@@ -238,8 +241,11 @@ class TokenizerMAE(nnx.Module):
     ) -> Dict[str, jax.Array]:
         # --- Preprocess videos ---
         B, T = videos.shape[:2]
-        patch_BTNP = patchify(videos, self.patch_size)
-        N = patch_BTNP.shape[2]
+        patch_BTHWP = patchify(videos, self.patch_size)
+        H, W = patch_BTHWP.shape[2:4]
+        N = H*W
+
+        patch_BTNP = patch_BTHWP.reshape((B, T, N, -1))
 
         # --- Randomly mask patches ---
         if training:
@@ -255,12 +261,13 @@ class TokenizerMAE(nnx.Module):
             patch_BTNP = jnp.where(
                 mask_BTN[..., jnp.newaxis], self.mask_patch.value, patch_BTNP
             )
-
+        patch_BTHWP = patch_BTNP.reshape((B, T, H, W, -1))
         # --- Encode ---
-        z_BTNL = self.encoder(patch_BTNP)
+
+        z_BTHWL = self.encoder(patch_BTHWP)
         # squeeze latents through tanh as described in Dreamer 4 section 3.1
-        z_BTNL = nnx.tanh(z_BTNL)
-        outputs = dict(z=z_BTNL)
+        z_BTHWL = nnx.tanh(z_BTHWL)
+        outputs = dict(z=z_BTHWL)
         return outputs
 
     def decode(self, z_BTNL: jax.Array, video_hw: Tuple[int, int]) -> jax.Array:
