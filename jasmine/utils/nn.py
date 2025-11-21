@@ -61,18 +61,42 @@ def rope(x, ts=None, inverse=False, maxlen=4096):
 
 
 def rope2d(x_BTHWM):
+
+    def get_cos_sin(D, seq_len):
+        inv_freq = 1 / (100 ** (jnp.arange(0, D, 2) / D))
+        t = jnp.arange(seq_len)
+        freqs = jnp.einsum('i, j -> ij', t, inv_freq)
+        freqs = jnp.concat([freqs, freqs], axis=-1)
+        cos = jnp.cos(freqs)
+        sin = jnp.sin(freqs)
+        return cos, sin
+
     B, T, H, W, M = x_BTHWM.shape
-    x1_BTHWI, x2_BTHWI = jnp.split(x_BTHWM, 2, axis=-1)
+    x_BTNM = x_BTHWM.reshape((B, T, -1, M))
+    seq_len = H if H > W else W
+    cos_emb, sin_emb = get_cos_sin(M // 2, seq_len)
 
-    I = x1_BTHWI.shape[-1]
-    x1_BHNI = x1_BTHWI.swapaxes(1, 2).reshape((B, H, -1, I))
-    x1_BHNI = rope(x1_BHNI, maxlen=H)
-    x1_BTHWI = x1_BHNI.reshape((B, H, T, W, I)).swapaxes(1, 2)
+    y_BTNM2, x_BTNM2 = jnp.split(x_BTNM, 2, axis=-1)
 
-    x2_BWNI = x2_BTHWI.swapaxes(1, 3).reshape((B, W, -1, I))
-    x2_BWNI = rope(x2_BWNI, maxlen=W)
-    x2_BTHWI = x2_BWNI.reshape((B, W, H, T, I)).swapaxes(1, 3)
-    return jnp.concat([x1_BTHWI, x2_BTHWI], axis=-1)
+    def rotate_half(arr):
+        x1, x2 = arr[..., :arr.shape[-1] // 2], arr[..., arr.shape[-1] // 2:]
+        return jnp.concat([-x2, x1], axis=-1)
+
+    def apply(arr, pos, cos_emb, sin_emb):
+        cos = jnp.take(cos_emb, pos, axis=0)
+        sin = jnp.take(sin_emb, pos, axis=0)
+        return (arr*cos) + (rotate_half(arr)*sin)
+
+    y_BNM2 = y_BTNM2.reshape((B*T, H*W, -1))
+    x_BNM2 = x_BTNM2.reshape((B*T, H*W, -1))
+
+    mesh = jnp.meshgrid(jnp.arange(H), jnp.arange(W), indexing='ij')
+    pos = jnp.stack(mesh, axis=-1).reshape(1, -1, 2)
+    y_BNM2 = apply(y_BNM2, pos[:, :, 0], cos_emb, sin_emb)
+    x_BNM2 = apply(x_BNM2, pos[:, :, 1], cos_emb, sin_emb)
+    y_BTNM2 = y_BNM2.reshape((B, T, H*W, -1))
+    x_BTNM2 = x_BNM2.reshape((B, T, H*W, -1))
+    return jnp.concat([y_BTNM2, x_BTNM2], axis=-1).reshape(B, T, H, W, M)
 
 
 class AxialSpatialBlock(nnx.Module):
@@ -145,8 +169,8 @@ class AxialSpatialBlock(nnx.Module):
 
         q_BTHWM, k_BTHWM, v_BTHWM = jnp.split(self.qkv_proj(z_BTHWM), 3, -1)
 
-        q_BTNM = rope2d(self.qknorm(q_BTHWM)).reshape((B, T, -1, M))
-        k_BTNM = rope2d(self.qknorm(k_BTHWM)).reshape((B, T, -1, M))
+        q_BTNM = rope2d(self.qknorm(q_BTHWM)).reshape(B, T, -1, M)
+        k_BTNM = rope2d(self.qknorm(k_BTHWM)).reshape(B, T, -1, M)
         v_BTNM = v_BTHWM.reshape((B, T, -1, M))
 
         z_BTNM = self.spatial_attention(
