@@ -400,6 +400,13 @@ class AxialTransformer(nnx.Module):
             rngs=rngs,
         )
 
+        self.output_norm = nnx.LayerNorm(
+            num_features=self.out_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.param_dtype,  # layer norm in full precision
+            rngs=rngs,
+        )
+
         self.pos_enc = _get_spatiotemporal_positional_encoding(
             self.model_dim, max_len=max_len
         )
@@ -448,6 +455,7 @@ class AxialTransformer(nnx.Module):
             x_BTHWM = block(x_BTHWM)
 
         x_BTHWV = self.output_dense(x_BTHWM)
+        
         if self.sow_logits:
             self.sow(nnx.Intermediate, "logits", x_BTNV)
         return x_BTHWV.reshape((B, T, H, W, -1))
