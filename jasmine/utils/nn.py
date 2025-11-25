@@ -125,7 +125,7 @@ class AxialSpatialBlock(nnx.Module):
         self.sow_weights = sow_weights
         self.decode = decode
 
-        self.spatial_norm = nnx.LayerNorm(
+        self.spatial_norm = nnx.RMSNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
             dtype=self.param_dtype,  # layer norm in full precision
@@ -233,7 +233,7 @@ class AxialBlock(nnx.Module):
 
         self.spatial_blocks = nnx.List(_blocks)
 
-        self.temporal_norm = nnx.LayerNorm(
+        self.temporal_norm = nnx.RMSNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
             dtype=self.param_dtype,  # layer norm in full precision
@@ -269,7 +269,7 @@ class AxialBlock(nnx.Module):
             decode=self.decode,
         )
 
-        self.ffn_norm = nnx.LayerNorm(
+        self.ffn_norm = nnx.RMSNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
             dtype=self.param_dtype,  # layer norm in full precision
@@ -306,6 +306,7 @@ class AxialBlock(nnx.Module):
 
         q_BNTM, k_BNTM, v_BNTM = jnp.split(
             self.qkv_proj(z_BNTM), 3, -1)
+
         q_BNTM = self.qknorm(q_BNTM)
         k_BNTM = self.qknorm(k_BNTM)
 
@@ -380,7 +381,7 @@ class AxialTransformer(nnx.Module):
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
         self.decode = decode
-        self.input_norm1 = nnx.LayerNorm(
+        self.input_norm1 = nnx.RMSNorm(
             num_features=self.input_dim,
             param_dtype=self.param_dtype,
             dtype=self.param_dtype,  # layer norm in full precision
@@ -393,7 +394,7 @@ class AxialTransformer(nnx.Module):
             dtype=self.dtype,
             rngs=rngs,
         )
-        self.input_norm2 = nnx.LayerNorm(
+        self.input_norm2 = nnx.RMSNorm(
             num_features=self.model_dim,
             param_dtype=self.param_dtype,
             dtype=self.param_dtype,  # layer norm in full precision
