@@ -99,6 +99,20 @@ def rope2d(x_BTHWM):
     return jnp.concat([y_BTNM2, x_BTNM2], axis=-1).reshape(B, T, H, W, M)
 
 
+class DyT(nnx.Module):
+    def __init__(self, C: int, init_alpha: float = 0.05, *, rngs: nnx.Rngs):
+
+        self.alpha = nnx.Param(jnp.ones((1,)) * init_alpha)
+
+        self.gamma = nnx.Param(jnp.ones((C,)))
+
+        self.beta = nnx.Param(jnp.zeros((C,)))
+
+    def __call__(self, x):
+        x = jnp.tanh(self.alpha * x)
+        return self.gamma * x + self.beta
+
+
 class AxialSpatialBlock(nnx.Module):
 
     def __init__(
@@ -443,7 +457,7 @@ class AxialTransformer(nnx.Module):
 
     def __call__(self, x_BTHWI: jax.Array) -> jax.Array:
 
-        x_BTNI = self.input_norm1(x_BTHWI)
+        x_BTHWI = self.input_norm1(x_BTHWI)
         x_BTHWM = self.input_dense(x_BTHWI)
         x_BTHWM = self.input_norm2(x_BTHWM)
 
@@ -456,9 +470,9 @@ class AxialTransformer(nnx.Module):
             x_BTHWM = block(x_BTHWM)
 
         x_BTHWV = self.output_dense(x_BTHWM)
-        
+
         if self.sow_logits:
-            self.sow(nnx.Intermediate, "logits", x_BTNV)
+            self.sow(nnx.Intermediate, "logits", x_BTHWV)
         return x_BTHWV.reshape((B, T, H, W, -1))
 
 
