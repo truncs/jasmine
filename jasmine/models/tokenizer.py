@@ -266,7 +266,7 @@ class TokenizerMAE(nnx.Module):
 
         z_BTHWL = self.encoder(patch_BTHWP)
         # squeeze latents through tanh as described in Dreamer 4 section 3.1
-        z_BTHWL = nnx.tanh(z_BTHWL)
+        #z_BTHWL = nnx.tanh(z_BTHWL)
         outputs = dict(z=z_BTHWL)
         return outputs
 

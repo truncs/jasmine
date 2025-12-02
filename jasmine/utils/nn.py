@@ -61,18 +61,56 @@ def rope(x, ts=None, inverse=False, maxlen=4096):
 
 
 def rope2d(x_BTHWM):
+
+    def get_cos_sin(D, seq_len):
+        inv_freq = 1 / (100 ** (jnp.arange(0, D, 2) / D))
+        t = jnp.arange(seq_len)
+        freqs = jnp.einsum('i, j -> ij', t, inv_freq)
+        freqs = jnp.concat([freqs, freqs], axis=-1)
+        cos = jnp.cos(freqs)
+        sin = jnp.sin(freqs)
+        return cos, sin
+
     B, T, H, W, M = x_BTHWM.shape
-    x1_BTHWI, x2_BTHWI = jnp.split(x_BTHWM, 2, axis=-1)
+    x_BTNM = x_BTHWM.reshape((B, T, -1, M))
+    seq_len = H if H > W else W
+    cos_emb, sin_emb = get_cos_sin(M // 2, seq_len)
 
-    I = x1_BTHWI.shape[-1]
-    x1_BHNI = x1_BTHWI.swapaxes(1, 2).reshape((B, H, -1, I))
-    x1_BHNI = rope(x1_BHNI, maxlen=H)
-    x1_BTHWI = x1_BHNI.reshape((B, H, T, W, I)).swapaxes(1, 2)
+    y_BTNM2, x_BTNM2 = jnp.split(x_BTNM, 2, axis=-1)
 
-    x2_BWNI = x2_BTHWI.swapaxes(1, 3).reshape((B, W, -1, I))
-    x2_BWNI = rope(x2_BWNI, maxlen=W)
-    x2_BTHWI = x2_BWNI.reshape((B, W, H, T, I)).swapaxes(1, 3)
-    return jnp.concat([x1_BTHWI, x2_BTHWI], axis=-1)
+    def rotate_half(arr):
+        x1, x2 = arr[..., :arr.shape[-1] // 2], arr[..., arr.shape[-1] // 2:]
+        return jnp.concat([-x2, x1], axis=-1)
+
+    def apply(arr, pos, cos_emb, sin_emb):
+        cos = jnp.take(cos_emb, pos, axis=0)
+        sin = jnp.take(sin_emb, pos, axis=0)
+        return (arr*cos) + (rotate_half(arr)*sin)
+
+    y_BNM2 = y_BTNM2.reshape((B*T, H*W, -1))
+    x_BNM2 = x_BTNM2.reshape((B*T, H*W, -1))
+
+    mesh = jnp.meshgrid(jnp.arange(H), jnp.arange(W), indexing='ij')
+    pos = jnp.stack(mesh, axis=-1).reshape(1, -1, 2)
+    y_BNM2 = apply(y_BNM2, pos[:, :, 0], cos_emb, sin_emb)
+    x_BNM2 = apply(x_BNM2, pos[:, :, 1], cos_emb, sin_emb)
+    y_BTNM2 = y_BNM2.reshape((B, T, H*W, -1))
+    x_BTNM2 = x_BNM2.reshape((B, T, H*W, -1))
+    return jnp.concat([y_BTNM2, x_BTNM2], axis=-1).reshape(B, T, H, W, M)
+
+
+class DyT(nnx.Module):
+    def __init__(self, C: int, init_alpha: float = 0.05, *, rngs: nnx.Rngs):
+
+        self.alpha = nnx.Param(jnp.ones((1,)) * init_alpha)
+
+        self.gamma = nnx.Param(jnp.ones((C,)))
+
+        self.beta = nnx.Param(jnp.zeros((C,)))
+
+    def __call__(self, x):
+        x = jnp.tanh(self.alpha * x)
+        return self.gamma * x + self.beta
 
 
 class AxialSpatialBlock(nnx.Module):
@@ -101,7 +139,7 @@ class AxialSpatialBlock(nnx.Module):
         self.sow_weights = sow_weights
         self.decode = decode
 
-        self.spatial_norm = nnx.LayerNorm(
+        self.spatial_norm = nnx.RMSNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
             dtype=self.param_dtype,  # layer norm in full precision
@@ -145,8 +183,8 @@ class AxialSpatialBlock(nnx.Module):
 
         q_BTHWM, k_BTHWM, v_BTHWM = jnp.split(self.qkv_proj(z_BTHWM), 3, -1)
 
-        q_BTNM = rope2d(self.qknorm(q_BTHWM)).reshape((B, T, -1, M))
-        k_BTNM = rope2d(self.qknorm(k_BTHWM)).reshape((B, T, -1, M))
+        q_BTNM = rope2d(self.qknorm(q_BTHWM)).reshape(B, T, -1, M)
+        k_BTNM = rope2d(self.qknorm(k_BTHWM)).reshape(B, T, -1, M)
         v_BTNM = v_BTHWM.reshape((B, T, -1, M))
 
         z_BTNM = self.spatial_attention(
@@ -209,7 +247,7 @@ class AxialBlock(nnx.Module):
 
         self.spatial_blocks = nnx.List(_blocks)
 
-        self.temporal_norm = nnx.LayerNorm(
+        self.temporal_norm = nnx.RMSNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
             dtype=self.param_dtype,  # layer norm in full precision
@@ -245,7 +283,7 @@ class AxialBlock(nnx.Module):
             decode=self.decode,
         )
 
-        self.ffn_norm = nnx.LayerNorm(
+        self.ffn_norm = nnx.RMSNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
             dtype=self.param_dtype,  # layer norm in full precision
@@ -282,6 +320,7 @@ class AxialBlock(nnx.Module):
 
         q_BNTM, k_BNTM, v_BNTM = jnp.split(
             self.qkv_proj(z_BNTM), 3, -1)
+
         q_BNTM = self.qknorm(q_BNTM)
         k_BNTM = self.qknorm(k_BNTM)
 
@@ -356,7 +395,7 @@ class AxialTransformer(nnx.Module):
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
         self.decode = decode
-        self.input_norm1 = nnx.LayerNorm(
+        self.input_norm1 = nnx.RMSNorm(
             num_features=self.input_dim,
             param_dtype=self.param_dtype,
             dtype=self.param_dtype,  # layer norm in full precision
@@ -369,8 +408,15 @@ class AxialTransformer(nnx.Module):
             dtype=self.dtype,
             rngs=rngs,
         )
-        self.input_norm2 = nnx.LayerNorm(
+        self.input_norm2 = nnx.RMSNorm(
             num_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.param_dtype,  # layer norm in full precision
+            rngs=rngs,
+        )
+
+        self.output_norm = nnx.LayerNorm(
+            num_features=self.out_dim,
             param_dtype=self.param_dtype,
             dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
@@ -411,7 +457,7 @@ class AxialTransformer(nnx.Module):
 
     def __call__(self, x_BTHWI: jax.Array) -> jax.Array:
 
-        x_BTNI = self.input_norm1(x_BTHWI)
+        x_BTHWI = self.input_norm1(x_BTHWI)
         x_BTHWM = self.input_dense(x_BTHWI)
         x_BTHWM = self.input_norm2(x_BTHWM)
 
@@ -424,8 +470,9 @@ class AxialTransformer(nnx.Module):
             x_BTHWM = block(x_BTHWM)
 
         x_BTHWV = self.output_dense(x_BTHWM)
+
         if self.sow_logits:
-            self.sow(nnx.Intermediate, "logits", x_BTNV)
+            self.sow(nnx.Intermediate, "logits", x_BTHWV)
         return x_BTHWV.reshape((B, T, H, W, -1))
 
 
