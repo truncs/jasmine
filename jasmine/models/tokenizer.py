@@ -152,6 +152,8 @@ class TokenizerMAE(nnx.Module):
 
     def __init__(
         self,
+        image_height: int,
+        image_width: int,
         in_dim: int,
         model_dim: int,
         ffn_dim: int,
@@ -198,12 +200,14 @@ class TokenizerMAE(nnx.Module):
         )
 
         self.out_dim = self.in_dim * self.patch_size**2
+        self.decoder_num_latents = image_height // self.patch_size * image_width // self.patch_size
+        
         self.decoder = AxialTransformer(
             self.latent_dim,
             self.model_dim,
             self.ffn_dim,
             self.out_dim,
-            self.num_latents,
+            self.decoder_num_latents,
             self.num_blocks,
             self.num_heads,
             self.dropout,
@@ -227,8 +231,10 @@ class TokenizerMAE(nnx.Module):
         videos_BTHWC = batch["videos"]
         outputs = self.mask_and_encode(videos_BTHWC, batch["rng"], training)
         z_BTML = outputs["z"]
+
         _, recon_BTNC = self.decoder(z_BTML)
-        recon_BTHWC = recon_BTNC.reshape(B, T, H, W, C)
+        B, T = recon_BTNC.shape[:2]
+        recon_BTHWC = recon_BTNC.reshape(B, T, H//self.patch_size, W//self.patch_size, -1)
         recon_BTHWC = recon_BTHWC.astype(jnp.float32)
         recon_BTHWC = nnx.sigmoid(recon_BTHWC)
         recon_BTHWC = recon_BTHWC.astype(self.dtype)
@@ -269,11 +275,12 @@ class TokenizerMAE(nnx.Module):
 
         _, z_BTML = self.encoder(patch_BTHWP)
         # squeeze latents through tanh as described in Dreamer 4 section 3.1
-        #z_BTHWL = nnx.tanh(z_BTHWL)
+        # z_BTHWL = nnx.tanh(z_BTHWL)
         outputs = dict(z=z_BTML)
         return outputs
 
-    def decode(self, z_BTNL: jax.Array, video_hw: Tuple[int, int]) -> jax.Array:
+    def decode(
+            self, z_BTNL: jax.Array, video_hw: Tuple[int, int]) -> jax.Array:
         recon_BTNP = self.decoder(z_BTNL)
         recon_BTNP = recon_BTNP.astype(jnp.float32)
         recon_BTNP = nnx.sigmoid(recon_BTNP)

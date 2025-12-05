@@ -1,4 +1,5 @@
 import math
+from functools import partial
 from typing import Tuple, Callable
 
 from flax import nnx
@@ -176,13 +177,6 @@ class Attention(nnx.Module):
         )
 
 
-        self.qknorm = nnx.LayerNorm(
-            num_features=self.dim,
-            param_dtype=self.param_dtype,
-            dtype=self.param_dtype,  # layer norm in full precision
-            rngs=rngs,
-        )
-
         self.outnorm = nnx.RMSNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
@@ -204,35 +198,53 @@ class Attention(nnx.Module):
             decode=self.decode,
         )
 
-    @nnx.remat
-    def __call__(self, x1: jax.Array, x2: jax.Array) -> jax.Array:
+    @partial(nnx.remat, static_argnums=(3,))
+    def __call__(self, x1: jax.Array, x2: jax.Array, mask: jax.Array = None) -> jax.Array:
+
         x1 = self.norm1(x1)
         x2 = self.norm2(x2)
-
+        reshape = False
+            
         q = self.q_proj(x1)
         k, v = jnp.split(self.kv_proj(x2), 2, -1)
 
         if len(x1.shape) == 5:
             B, T, H, W, M = x1.shape
-
             q = rope2d(self.qknorm(q)).reshape(B, T, -1, M)
-            k = rope2d(self.qknorm(k)).reshape(B, T, -1, M)
-            v = v.reshape(B, T, -1, M)
+            reshape = True
         else:
             q = rope(self.qknorm(q))
+
+        if len(x2.shape) == 5:
+            B2, T2, H2, W2, M2 = x2.shape
+            k = rope2d(self.qknorm(k)).reshape(B2, T2, -1, M2)
+            v = v.reshape(B2, T2, -1, M2)
+        else:
             k = rope(self.qknorm(k))
             v = v
 
+        if q.shape[1] != k.shape[1]:
+            B, D = q.shape[0], q.shape[-1]
+            N = q.shape[1]
+            q = q.reshape(B, -1, D)
+            k = k.reshape(B, -1, D)
+            v = v.reshape(B, -1, D)
+            
         attn = self.attention(
-            q, k, v, sow_weights=self.sow_weights
+            q, k, v, sow_weights=self.sow_weights, mask=mask
         )
 
+        if reshape:
+            attn = attn.reshape(B, T, H, W, M)
+        elif q.shape[1] != k.shape[1]:
+            attn = attn.reshape(B, N, -1, D)
+
         x1 += attn
+
         return self.outnorm(x1)
 
 
-class AxialSpatialBlock(nnx.Module):
-
+class TokenLatentAttention(nnx.Module):
     def __init__(
         self,
         dim: int,
@@ -246,7 +258,7 @@ class AxialSpatialBlock(nnx.Module):
         sow_weights: bool,
         decode: bool,
     ):
-
+        
         self.dim = dim
         self.num_heads = num_heads
         self.dropout = dropout
@@ -257,59 +269,74 @@ class AxialSpatialBlock(nnx.Module):
         self.sow_weights = sow_weights
         self.decode = decode
 
-
-        self.spatial_attention = Attention(
+        self.token_attention = Attention(
             num_heads=self.num_heads,
-            in_features=self.dim,
-            qkv_features=self.dim,
-            dropout_rate=self.dropout,
+            dim=self.dim,
+            dropout=self.dropout,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
-            attention_fn=_create_flash_attention_fn(
-                self.use_flash_attention, is_causal=self.spatial_causal
-            ),
+            use_flash_attention=self.use_flash_attention,
+            sow_weights=self.sow_weights,
             rngs=rngs,
+            spatial_causal=self.spatial_causal,
             decode=self.decode,
         )
 
-        self.cross_attention = Attention(
+        self.token_latent_attention = Attention(
             num_heads=self.num_heads,
-            in_features=self.dim,
-            qkv_features=self.dim,
-            dropout_rate=self.dropout,
+            dim=self.dim,
+            dropout=self.dropout,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
-            attention_fn=_create_flash_attention_fn(
-                self.use_flash_attention, is_causal=self.spatial_causal
-            ),
+            use_flash_attention=self.use_flash_attention,
+            sow_weights=self.sow_weights,
             rngs=rngs,
+            spatial_causal=self.spatial_causal,
             decode=self.decode,
         )
 
         self.latent_attention = Attention(
             num_heads=self.num_heads,
-            in_features=self.dim,
-            qkv_features=self.dim,
-            dropout_rate=self.dropout,
+            dim=self.dim,
+            dropout=self.dropout,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
-            attention_fn=_create_flash_attention_fn(
-                self.use_flash_attention, is_causal=self.spatial_causal
-            ),
+            use_flash_attention=self.use_flash_attention,
+            sow_weights=self.sow_weights,
             rngs=rngs,
+            spatial_causal=self.spatial_causal,
             decode=self.decode,
         )
 
     @nnx.remat
-    def __call__(self, x_BTHWM: jax.Array, l_BTLM: jax.Array) -> jax.Array:
+    def __call__(self, token: jax.Array, latent: jax.Array) -> jax.Array:
+        token = self.token_attention(token, token)
 
-        B, T, H, W, M = x_BTHWM.shape
-        
-        x_BTHWM = self.spatial_attention(x_BTHWM, x_BTHWM)
-        l_BLTM = self.cross_attention(l_BTLM, x_BTHWM.reshape(B, T, -1, M))
-        l_BLTM = self.latent_attention(l_BLTM, l_BLTM)
-        
-        return x_BTHWM, l_BTLM
+        if latent.shape[1] != token.shape[1]:
+            # We should flatten this dim and then add the appropriate mask
+            # to the attention.
+            B, Q, T = latent.shape[0:3]
+            K = token.shape[1]
+
+            @jax.jit
+            def func(rows, cols, Q, K):
+                return jnp.stack(jnp.where(rows//Q >= cols//K, True, False), axis=0)
+
+            xi = jnp.arange(T*K)
+            yi = jnp.arange(T*Q)
+            
+            rows, cols = jnp.meshgrid(yi, xi, indexing='ij')
+            attention_mask =  func(rows, cols, Q, K)
+                
+            latent = self.token_latent_attention(
+                latent, token, mask=attention_mask)
+            latent = latent.reshape(B, Q, T, -1)
+        else:
+            latent = self.token_latent_attention(latent, token)
+        latent = self.latent_attention(latent, latent)
+
+        return token, latent
+
 
 
 class AxialBlock(nnx.Module):
@@ -348,7 +375,7 @@ class AxialBlock(nnx.Module):
 
         for _ in range(3):
             _blocks.append(
-                AxialSpatialBlock(
+                TokenLatentAttention(
                     dim=self.dim,
                     num_heads=self.num_heads,
                     dropout=self.dropout,
@@ -386,17 +413,16 @@ class AxialBlock(nnx.Module):
             rngs=rngs,
         )
 
-        self.temporal_attention = nnx.MultiHeadAttention(
+        self.temporal_attention = TokenLatentAttention(
             num_heads=self.num_heads,
-            in_features=self.dim,
-            qkv_features=self.dim,
-            dropout_rate=self.dropout,
+            dim=self.dim,
+            dropout=self.dropout,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
-            attention_fn=_create_flash_attention_fn(
-                self.use_flash_attention, is_causal=self.temporal_causal
-            ),
+            use_flash_attention=self.use_flash_attention,
             rngs=rngs,
+            spatial_causal=self.spatial_causal,
+            sow_weights=self.sow_weights,
             decode=self.decode,
         )
 
@@ -425,10 +451,11 @@ class AxialBlock(nnx.Module):
     @nnx.remat
     def __call__(self, x_BTHWM: jax.Array, l_BTLM) -> jax.Array:
         # --- Spatial z ---
-        B, T, H, W, M = x_BTHWM.shape
+        B, T = x_BTHWM.shape[:2]
+        M = x_BTHWM.shape[-1]
 
         for block in self.spatial_blocks:
-            x_BTHWM = block(x_BTHWM, l_BTLM)
+            x_BTHWM, l_BLTM = block(x_BTHWM, l_BTLM)
 
         # --- Temporal attention ---
         x_BTNM = x_BTHWM.reshape((B, T, -1, M))
@@ -436,17 +463,17 @@ class AxialBlock(nnx.Module):
         l_BLTM = l_BTLM.swapaxes(1, 2)
 
         z_BNTM, z_BLTM = self.temporal_attention(
-            z_BNTM, l_BLTM)
+            x_BNTM, l_BLTM)
 
         z_BTNM = z_BNTM.swapaxes(1, 2)
         z_BTLM = z_BLTM.swapaxes(1, 2)
 
-        # --- Feedforward ---
-        z_BTNM = self.ffn_norm(z_BTNM)
-        z_BTND = self.ffn_dense1(z_BTNM)
-        z_BTND = jax.nn.gelu(z_BTND)
-        z_BTNM = self.ffn_dense2(z_BTND)
-        x_BTNM = x_BTNM + z_BTNM
+        # # --- Feedforward ---
+        # z_BTNM = self.ffn_norm(z_BTNM)
+        # z_BTND = self.ffn_dense1(z_BTNM)
+        # z_BTND = jax.nn.gelu(z_BTND)
+        # z_BTNM = self.ffn_dense2(z_BTND)
+        # x_BTNM = x_BTNM + z_BTNM
 
         z_BTLM = self.ffn_norm(z_BTLM)
         z_BTLD = self.ffn_dense1(z_BTLM)
@@ -457,7 +484,7 @@ class AxialBlock(nnx.Module):
         if self.sow_activations:
             self.sow(nnx.Intermediate, "activations", l_BTLM)
 
-        return x_BTNM.reshape((B, T, H, W, -1)), l_BTLM
+        return z_BTNM.reshape(x_BTHWM.shape), l_BTLM
     
 
 
@@ -574,14 +601,6 @@ class AxialTransformer(nnx.Module):
             rngs=rngs,
         )
 
-        self.latent_output_dense = nnx.Linear(
-            in_features=self.model_dim,
-            out_features=self.out_dim,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            rngs=rngs,
-        )
-
         self.latents = nnx.Param(
             jax.random.uniform(rngs(), (self.num_latents, self.model_dim)))
 
@@ -591,22 +610,19 @@ class AxialTransformer(nnx.Module):
         x_BTHWM = self.input_dense(x_BTHWI)
         x_BTHWM = self.input_norm2(x_BTHWM)
 
-        B, T, H, W, M = x_BTHWM.shape
-        x_BTNM = x_BTHWM.reshape((B, T, H*W, M))
-        # x_BTNM = self.pos_enc(x_BTNM)
+        B, T = x_BTHWM.shape[:2]
+        
+        l_TLM = jnp.repeat(self.latents[jnp.newaxis, ...], T, axis=0)
+        l_BTLM = jnp.repeat(l_TLM[jnp.newaxis, ...], B, axis=0)
 
-        l_BTLM = einops.repeat(self.latents, "n d -> b t n d", b=B, t=T)
-
-        x_BTHWM = x_BTNM.reshape((B, T, H, W, M))
         for block in self.blocks:
             x_BTHWM, l_BTLM = block(x_BTHWM, l_BTLM)
 
-        x_BTHWV = self.output_dense(x_BTHWM)
-        l_BTLV = self.latent_output_dense(l_BTLV)
+        l_BTLV = self.output_dense(l_BTLM)
 
         if self.sow_logits:
             self.sow(nnx.Intermediate, "logits", x_BTHWV)
-        return x_BTHWV.reshape((B, T, H, W, -1)), l_BTLV
+        return x_BTHWM, l_BTLV
 
 
 def normalize(x: jax.Array) -> jax.Array:
@@ -681,7 +697,7 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Ca
     """
 
     def attention_fn(
-        query_BTHD, key_BSHD, value_BSHD, bias=None, mask_B111=None, **kwargs
+        query_BTHD, key_BSHD, value_BSHD, bias=None, mask=None, **kwargs
     ):
         implementation = "cudnn" if use_flash_attention else None
 
@@ -708,6 +724,10 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Ca
         attention_mask = jnp.ones((Q, K), dtype=jnp.bool_)
         attention_mask = attention_mask.at[T:, :].set(False)
         attention_mask = attention_mask.at[:, S:].set(False)
+
+        if mask is not None:
+            Qm, Km = mask.shape
+            attention_mask = attention_mask.at[:Qm, :Km].set(mask)
 
         mask_11TS = attention_mask[jnp.newaxis, jnp.newaxis, :, :]
 

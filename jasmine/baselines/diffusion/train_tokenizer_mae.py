@@ -88,6 +88,8 @@ def build_model(args: Args, rng: jax.Array) -> tuple[TokenizerMAE, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
     tokenizer = TokenizerMAE(
+        image_height=args.image_height,
+        image_width=args.image_width,
         in_dim=args.image_channels,
         model_dim=args.model_dim,
         ffn_dim=args.ffn_dim,
