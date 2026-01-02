@@ -161,4 +161,4 @@ def get_dataloader(
         read_options=read_options,
     )
 
-    return dataloader
+    return iter(dataloader)

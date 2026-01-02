@@ -82,12 +82,16 @@ class Args:
     val_interval: int = 20_000
     val_steps: int = 50
     wandb_id: str = ""
+    num_workers: int = 8
+    prefetch_buffer_size: int = 1
 
 
 def build_model(args: Args, rng: jax.Array) -> tuple[TokenizerMAE, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
     tokenizer = TokenizerMAE(
+        image_height=args.image_height,
+        image_width=args.image_width,
         in_dim=args.image_channels,
         model_dim=args.model_dim,
         ffn_dim=args.ffn_dim,
@@ -166,8 +170,8 @@ def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
         # The dataloader shards the dataset across all processes
         args.batch_size,
         *image_shape,
-        num_workers=8,
-        prefetch_buffer_size=1,
+        num_workers=args.num_workers,
+        prefetch_buffer_size=args.prefetch_buffer_size,
         seed=args.seed,
     )
     return grain_dataloader
