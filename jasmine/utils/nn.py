@@ -10,7 +10,8 @@ import einops
 
 def _get_spatiotemporal_positional_encoding(d_model: int, max_len: int = 5000):
     """
-    Creates a function that applies separate sinusoidal positional encodings to the temporal and spatial dimensions.
+    Creates a function that applies separate sinusoidal positional encodings to
+    the temporal and spatial dimensions.
     """
     pe = jnp.zeros((max_len, d_model))
     position = jnp.arange(0, max_len, dtype=jnp.float32)[:, jnp.newaxis]
@@ -176,14 +177,13 @@ class Attention(nnx.Module):
             rngs=rngs,
         )
 
-
         self.outnorm = nnx.RMSNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
             dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
         )
-        
+
         self.attention = nnx.MultiHeadAttention(
             num_heads=self.num_heads,
             in_features=self.dim,
@@ -199,12 +199,13 @@ class Attention(nnx.Module):
         )
 
     @partial(nnx.remat, static_argnums=(3,))
-    def __call__(self, x1: jax.Array, x2: jax.Array, mask: jax.Array = None) -> jax.Array:
+    def __call__(self, x1: jax.Array, x2: jax.Array,
+                 mask: jax.Array = None) -> jax.Array:
 
         x1 = self.norm1(x1)
         x2 = self.norm2(x2)
         reshape = False
-            
+
         q = self.q_proj(x1)
         k, v = jnp.split(self.kv_proj(x2), 2, -1)
 
@@ -229,7 +230,7 @@ class Attention(nnx.Module):
             q = q.reshape(B, -1, D)
             k = k.reshape(B, -1, D)
             v = v.reshape(B, -1, D)
-            
+
         attn = self.attention(
             q, k, v, sow_weights=self.sow_weights, mask=mask
         )
@@ -258,7 +259,7 @@ class TokenLatentAttention(nnx.Module):
         sow_weights: bool,
         decode: bool,
     ):
-        
+
         self.dim = dim
         self.num_heads = num_heads
         self.dropout = dropout
@@ -320,14 +321,15 @@ class TokenLatentAttention(nnx.Module):
 
             @jax.jit
             def func(rows, cols, Q, K):
-                return jnp.stack(jnp.where(rows//Q >= cols//K, True, False), axis=0)
+                return jnp.stack(
+                    jnp.where(rows//Q >= cols//K, True, False), axis=0)
 
             xi = jnp.arange(T*K)
             yi = jnp.arange(T*Q)
-            
+
             rows, cols = jnp.meshgrid(yi, xi, indexing='ij')
-            attention_mask =  func(rows, cols, Q, K)
-                
+            attention_mask = func(rows, cols, Q, K)
+
             latent = self.token_latent_attention(
                 latent, token, mask=attention_mask)
             latent = latent.reshape(B, Q, T, -1)
@@ -336,7 +338,6 @@ class TokenLatentAttention(nnx.Module):
         latent = self.latent_attention(latent, latent)
 
         return token, latent
-
 
 
 class AxialBlock(nnx.Module):
@@ -480,12 +481,11 @@ class AxialBlock(nnx.Module):
         z_BTLD = jax.nn.gelu(z_BTLD)
         z_BTLM = self.ffn_dense2(z_BTLD)
         l_BTLM = l_BTLM + z_BTLM
-        
+
         if self.sow_activations:
             self.sow(nnx.Intermediate, "activations", l_BTLM)
 
         return z_BTNM.reshape(x_BTHWM.shape), l_BTLM
-    
 
 
 class AxialTransformer(nnx.Module):
@@ -611,7 +611,7 @@ class AxialTransformer(nnx.Module):
         x_BTHWM = self.input_norm2(x_BTHWM)
 
         B, T = x_BTHWM.shape[:2]
-        
+
         l_TLM = jnp.repeat(self.latents[jnp.newaxis, ...], T, axis=0)
         l_BTLM = jnp.repeat(l_TLM[jnp.newaxis, ...], B, axis=0)
 
@@ -621,7 +621,7 @@ class AxialTransformer(nnx.Module):
         l_BTLV = self.output_dense(l_BTLM)
 
         if self.sow_logits:
-            self.sow(nnx.Intermediate, "logits", x_BTHWV)
+            self.sow(nnx.Intermediate, "logits", x_BTHWM)
         return x_BTHWM, l_BTLV
 
 
