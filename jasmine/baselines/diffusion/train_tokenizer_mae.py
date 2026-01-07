@@ -56,8 +56,8 @@ class Args:
     # Tokenizer
     model_dim: int = 512
     ffn_dim: int = 2048
-    latent_dim: int = 32
-    num_latents: int = 1024
+    latent_dim: int = 16
+    num_latents: int = 128
     patch_size: int = 16
     num_blocks: int = 4
     num_heads: int = 8
