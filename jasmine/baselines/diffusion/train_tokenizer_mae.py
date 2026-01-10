@@ -19,6 +19,7 @@ import tyro
 import wandb
 import grain
 import flax.nnx as nnx
+import lpips_jax
 
 from jasmine.models.tokenizer import TokenizerMAE
 from jasmine.utils.dataloader import get_dataloader
@@ -341,9 +342,12 @@ def main(args: Args) -> None:
         args, checkpoint_manager, optimizer, train_iterator, val_iterator
     )
 
+    # LPIPS evaluator
+    lpips_evaluator = lpips_jax.LPIPSEvaluator(replicate=False, net='alexnet') # ['alexnet', 'vgg16']
+
     # --- Define loss and train step (close over args) ---
     def tokenizer_loss_fn(
-        model: TokenizerMAE, inputs: dict, training: bool = False
+        model: TokenizerMAE, inputs: dict, lpips_evaluator, training: bool = False
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
@@ -351,29 +355,33 @@ def main(args: Args) -> None:
         outputs["recon"] = outputs["recon"].astype(jnp.float32)
         mse = jnp.square(gt - outputs["recon"]).mean()
 
+        lpips = lpips_evaluator(gt, outputs['recon'])
+
         gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
         recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
         psnr = jnp.asarray(pix.psnr(gt_clipped, recon)).mean()
         ssim = jnp.asarray(pix.ssim(gt_clipped, recon)).mean()
 
+        loss = mse + 0.3*lpips
+
         metrics = dict(
             mse=mse,
             psnr=psnr,
             ssim=ssim,
-            loss=mse,
+            loss=loss,
         )
 
-        return mse, (outputs["recon"], metrics)
+        return loss, (outputs["recon"], metrics)
 
     @nnx.jit(donate_argnums=0)
     def train_step(
-        optimizer: nnx.ModelAndOptimizer, inputs: dict
+        optimizer: nnx.ModelAndOptimizer, inputs: dict, lpips_evaluator
     ) -> tuple[jax.Array, jax.Array, dict]:
         def loss_fn(
             model: TokenizerMAE,
         ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             model.train()
-            return tokenizer_loss_fn(model, inputs, training=True)
+            return tokenizer_loss_fn(model, inputs, lpips_evaluator, training=True)
 
         (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
             optimizer.model
@@ -390,10 +398,11 @@ def main(args: Args) -> None:
 
     @nnx.jit
     def val_step(
-        tokenizer: TokenizerMAE, inputs: dict
+        tokenizer: TokenizerMAE, inputs: dict, lpips_evaluator
     ) -> tuple[jax.Array, jax.Array, dict]:
         tokenizer.eval()
-        (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, inputs, training=False)
+        (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, inputs,
+                                                     lpips_evaluator, training=False)
         return loss, recon, metrics
 
     def calculate_validation_metrics(val_dataloader, tokenizer, rng):
@@ -448,7 +457,7 @@ def main(args: Args) -> None:
         rng, _rng = jax.random.split(rng)
         first_batch = next(dataloader_train)
         first_batch["rng"] = _rng
-        compiled = train_step.lower(optimizer, first_batch).compile()
+        compiled = train_step.lower(optimizer, first_batch, lpips_evaluator).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
         # Do not skip the first batch during training
