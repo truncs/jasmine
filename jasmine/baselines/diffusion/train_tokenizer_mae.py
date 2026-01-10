@@ -356,7 +356,7 @@ def main(args: Args) -> None:
         mse = jnp.square(gt - outputs["recon"]).mean()
 
         lpips = lpips_evaluator(jax.lax.collapse(gt, 0, 2),
-                                jax.lax.collpase(outputs['recon'], 0, 2)).mean()
+                                jax.lax.collapse(outputs['recon'], 0, 2)).mean()
 
         gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
         recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
