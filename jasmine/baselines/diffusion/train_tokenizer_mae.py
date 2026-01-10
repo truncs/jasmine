@@ -355,7 +355,7 @@ def main(args: Args) -> None:
         outputs["recon"] = outputs["recon"].astype(jnp.float32)
         mse = jnp.square(gt - outputs["recon"]).mean()
 
-        lpips = lpips_evaluator(gt, outputs['recon'])
+        lpips = lpips_evaluator(gt, outputs['recon']).mean()
 
         gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
         recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
@@ -373,9 +373,9 @@ def main(args: Args) -> None:
 
         return loss, (outputs["recon"], metrics)
 
-    @nnx.jit(donate_argnums=0)
+    @nnx.jit(donate_argnums=0, static_argnums=1)
     def train_step(
-        optimizer: nnx.ModelAndOptimizer, inputs: dict, lpips_evaluator
+        optimizer: nnx.ModelAndOptimizer, lpips_evaluator, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
         def loss_fn(
             model: TokenizerMAE,
@@ -396,16 +396,16 @@ def main(args: Args) -> None:
             )
         return loss, recon, metrics
 
-    @nnx.jit
+    @nnx.jit(static_argnums=1)
     def val_step(
-        tokenizer: TokenizerMAE, inputs: dict, lpips_evaluator
+        tokenizer: TokenizerMAE, lpips_evaluator, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
         tokenizer.eval()
         (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, inputs,
                                                      lpips_evaluator, training=False)
         return loss, recon, metrics
 
-    def calculate_validation_metrics(val_dataloader, tokenizer, rng):
+    def calculate_validation_metrics(val_dataloader, tokenizer, lpips_evaluator, rng):
         step = 0
         loss_per_step = []
         metrics_per_step = []
@@ -414,7 +414,7 @@ def main(args: Args) -> None:
         for batch in val_dataloader:
             rng, _rng_mask = jax.random.split(rng, 2)
             batch["rng"] = _rng_mask
-            loss, recon, metrics = val_step(tokenizer, batch)
+            loss, recon, metrics = val_step(tokenizer, lpips_evaluator, batch)
             loss_per_step.append(loss)
             metrics_per_step.append(metrics)
             step += 1
@@ -457,7 +457,7 @@ def main(args: Args) -> None:
         rng, _rng = jax.random.split(rng)
         first_batch = next(dataloader_train)
         first_batch["rng"] = _rng
-        compiled = train_step.lower(optimizer, first_batch, lpips_evaluator).compile()
+        compiled = train_step.lower(optimizer, lpips_evaluator, first_batch).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
         # Do not skip the first batch during training
@@ -480,7 +480,7 @@ def main(args: Args) -> None:
                 print("Calculating validation metrics...")
                 rng, _rng_mask_val = jax.random.split(rng, 2)
                 val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(
-                    dataloader_val, optimizer.model, _rng_mask_val
+                    dataloader_val, optimizer.model, lpips_evaluator, _rng_mask_val
                 )
                 print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
                 val_results = {
