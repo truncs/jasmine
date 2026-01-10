@@ -470,7 +470,7 @@ def main(args: Args) -> None:
             # --- Train step ---
             rng, _rng = jax.random.split(rng)
             batch["rng"] = _rng
-            loss, recon, metrics = train_step(optimizer, batch)
+            loss, recon, metrics = train_step(optimizer, lpips_evaluator, batch)
             if step == first_step:
                 print_mem_stats("After params initialized")
             step += 1
