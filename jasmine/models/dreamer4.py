@@ -676,7 +676,7 @@ class Encoder(nnx.Module):
 
         # 6) Project latent tokens to bottleneck and tanh
         latent_tokens = encoded_tokens[:, :, :self.n_latents, :]
-        proj_tokens = nn.tanh(self.bottleneck_proj(latent_tokens))
+        proj_tokens = nnx.tanh(self.bottleneck_proj(latent_tokens))
 
         return proj_tokens, (patch_mask, keep_prob)  # keep mask if you want diagnostics
 
