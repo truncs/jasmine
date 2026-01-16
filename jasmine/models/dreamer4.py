@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+import numpy as np
 from flax import nnx
 import jax
 import time
@@ -35,22 +36,22 @@ class TokenLayout:
     def S(self) -> int:
         return self.n_latents + sum(n for _, n in self.segments)
 
-    def modality_ids(self) -> jnp.ndarray:
-        parts = [jnp.full((self.n_latents,), Modality.LATENT, dtype=jnp.int32)] if self.n_latents > 0 else []
+    def modality_ids(self) -> np.ndarray:
+        parts = [np.full((self.n_latents,), Modality.LATENT, dtype=np.int32)] if self.n_latents > 0 else []
         for m, n in self.segments:
             if n > 0:
-                parts.append(jnp.full((n,), int(m), dtype=jnp.int32))
-        return jnp.concatenate(parts) if parts else jnp.zeros((0,), dtype=jnp.int32)  # (S,)
+                parts.append(np.full((n,), int(m), dtype=np.int32))
+        return np.concatenate(parts) if parts else np.zeros((0,), dtype=np.int32)  # (S,)
 
     def S(self) -> int:
         return self.n_latents + sum(n for _, n in self.segments)
 
-    def modality_ids(self) -> jnp.ndarray:
-        parts = [jnp.full((self.n_latents,), Modality.LATENT, dtype=jnp.int32)] if self.n_latents > 0 else []
+    def modality_ids(self) -> np.ndarray:
+        parts = [np.full((self.n_latents,), Modality.LATENT, dtype=np.int32)] if self.n_latents > 0 else []
         for m, n in self.segments:
             if n > 0:
-                parts.append(jnp.full((n,), int(m), dtype=jnp.int32))
-        return jnp.concatenate(parts) if parts else jnp.zeros((0,), dtype=jnp.int32)  # (S,)
+                parts.append(np.full((n,), int(m), dtype=np.int32))
+        return np.concatenate(parts) if parts else np.zeros((0,), dtype=np.int32)  # (S,)
 
     def slices(self) -> dict:
         """Convenience: start/stop indices per modality (first occurrence if repeated)."""
@@ -189,7 +190,7 @@ class SpaceSelfAttentionModality(nnx.Module):
         d_model: int, 
         n_heads: int, 
         n_latents: int,
-        modality_ids: jnp.ndarray = nnx.static(),
+        modality_ids: np.ndarray = nnx.static(),
         mode: str = "encoder",
         dropout: float = 0.0,
         use_flash_attention: bool = False,
@@ -283,7 +284,7 @@ class SpaceSelfAttentionModality(nnx.Module):
             raise ValueError(f"Unknown mode {self.mode}")
 
         # Save (1,1,S,S) so it broadcasts over batch*time and heads -> (B*T, 1, S, S)
-        self.modality_mask = mask[None, None, :, :]          # (1,1,S,S)
+        self.modality_mask = np.array(mask[None, None, :, :])          # (1,1,S,S)
         
         self.attention = nnx.MultiHeadAttention(
             num_heads=n_heads,
@@ -303,10 +304,10 @@ class SpaceSelfAttentionModality(nnx.Module):
         x_ = x.reshape(B*T, S, D)
 
         if self.use_flash_attention:
-             mask = self.modality_mask[0, 0] # (S, S)
+             mask = jnp.array(self.modality_mask[0, 0]) # (S, S)
         else:
              # Flax MHA mask shape can be (batch, num_heads, q_len, k_len). We want one mask per (B*T).
-             mask = jnp.broadcast_to(self.modality_mask, (B*T, 1, S, S))   # (B*T,1,S,S)
+             mask = jnp.broadcast_to(jnp.array(self.modality_mask), (B*T, 1, S, S))   # (B*T,1,S,S)
 
         y_ = self.attention(
             x_, x_, 
@@ -387,7 +388,7 @@ class BlockCausalLayer(nnx.Module):
         n_heads: int,
         n_latents: int,
         space_mode: str,
-        modality_ids: jnp.ndarray = nnx.static(),
+        modality_ids: np.ndarray = nnx.static(),
         dropout: float = 0.0,
         mlp_ratio: float = 4.0,
         use_flash_attention: bool = False,
@@ -471,7 +472,7 @@ class BlockCausalTransformer(nnx.Module):
         depth: int,
         n_latents: int,
         space_mode: str,
-        modality_ids: jnp.ndarray = nnx.static(),
+        modality_ids: np.ndarray = nnx.static(),
         dropout: float = 0.0,
         mlp_ratio: float = 4.0,
         time_every: int = 4,
@@ -1332,7 +1333,7 @@ def test_wm_routed():
 
     # Toy layout (Q rows / K cols share this order):
     # [ACT, SIG, STP, SPA, SPA, SPA, REG, REG, ACT, AGT]
-    modality_ids = jnp.array(
+    modality_ids = np.array(
         [ACTION, SIGNAL, STEP, SPATIAL, SPATIAL, SPATIAL, REGISTER, REGISTER, ACTION, AGENT],
         dtype=jnp.int32
     )
