@@ -363,7 +363,7 @@ def restore_checkpoint_if_needed(
             )
         if restore_step:
             restored = checkpoint_manager.restore(
-                restore_step, args=restore_args)
+                restore_step, args=restore_args, partial_restore=True)
             restored_optimizer_state = restored["model_state"]
             nnx.update(optimizer, restored_optimizer_state)
             train_iterator = restored["train_dataloader_state"]
