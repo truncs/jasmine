@@ -440,9 +440,9 @@ class BlockCausalTransformer(nnx.Module):
         *,
         rngs: nnx.Rngs,
     ):
-        self.layers = []
+        layers = []
         for i in range(depth):
-            self.layers.append(
+            layers.append(
                 BlockCausalLayer(
                     d_model, n_heads, n_latents,
                     modality_ids=modality_ids,
@@ -453,6 +453,7 @@ class BlockCausalTransformer(nnx.Module):
                     rngs=rngs,
                 )
             )
+        self.layers = nnx.List(layers)
 
     def __call__(self, x, *, deterministic: bool = False):
         for layer in self.layers:

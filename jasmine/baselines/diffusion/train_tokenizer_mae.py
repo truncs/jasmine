@@ -207,6 +207,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
         encoder_kwargs=enc_kwargs,
         decoder_kwargs=dec_kwargs,
         dtype=args.dtype,
+        use_flash_attention=args.use_flash_attention,
         rngs=rngs,
     )
     return tokenizer, rng
