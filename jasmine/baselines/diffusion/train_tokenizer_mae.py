@@ -185,6 +185,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
         "time_every": 4,
         "d_patch": d_patch, 
         "use_flash_attention": args.use_flash_attention,
+        "dtype": args.dtype,
     }
     
     dec_kwargs = {
@@ -198,6 +199,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
         "time_every": 4,
         "d_bottleneck": enc_d_bottleneck, # Added this requirement
         "use_flash_attention": args.use_flash_attention,
+        "dtype": args.dtype,
     }
 
     tokenizer = Dreamer4TokenizerMAE(

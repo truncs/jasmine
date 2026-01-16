@@ -193,6 +193,7 @@ class SpaceSelfAttentionModality(nnx.Module):
         mode: str = "encoder",
         dropout: float = 0.0,
         use_flash_attention: bool = False,
+        dtype: Any = jnp.float32,
         *,
         rngs: nnx.Rngs,
     ):
@@ -203,6 +204,7 @@ class SpaceSelfAttentionModality(nnx.Module):
         self.mode = mode
         self.dropout = dropout
         self.use_flash_attention = use_flash_attention
+        self.dtype = dtype
 
         # Cache a (S,S) boolean mask indicating allowed key for each query index, per mode.
         S = int(self.modality_ids.shape[0])
@@ -288,6 +290,7 @@ class SpaceSelfAttentionModality(nnx.Module):
             in_features=d_model,
             qkv_features=d_model,
             dropout_rate=dropout,
+            dtype=self.dtype,
             attention_fn=_create_flash_attention_fn(
                 self.use_flash_attention, is_causal=False
             ),
@@ -316,19 +319,21 @@ class SpaceSelfAttentionModality(nnx.Module):
         return y
 
 class TimeSelfAttention(nnx.Module):
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.0, latents_only: bool = True, n_latents: int = 0, use_flash_attention: bool = False, *, rngs: nnx.Rngs):
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.0, latents_only: bool = True, n_latents: int = 0, use_flash_attention: bool = False, dtype: Any = jnp.float32, *, rngs: nnx.Rngs):
         self.d_model = d_model
         self.n_heads = n_heads
         self.dropout = dropout
         self.latents_only = latents_only
         self.n_latents = n_latents
         self.use_flash_attention = use_flash_attention
+        self.dtype = dtype
         
         self.attention = nnx.MultiHeadAttention(
             num_heads=n_heads,
             in_features=d_model,
             qkv_features=d_model,
             dropout_rate=dropout,
+            dtype=self.dtype,
             attention_fn=_create_flash_attention_fn(
                 self.use_flash_attention, is_causal=True
             ),
@@ -389,6 +394,7 @@ class BlockCausalLayer(nnx.Module):
         layer_index: int = 0,
         time_every: int = 4,
         latents_only_time: bool = True,
+        dtype: Any = jnp.float32,
         *,
         rngs: nnx.Rngs,
     ):
@@ -403,6 +409,7 @@ class BlockCausalLayer(nnx.Module):
         self.layer_index = layer_index
         self.time_every = time_every
         self.latents_only_time = latents_only_time
+        self.dtype = dtype
 
         # --- Space attention ---
         self.norm1 = RMSNorm(d_model, rngs=rngs)
@@ -414,6 +421,7 @@ class BlockCausalLayer(nnx.Module):
             mode=space_mode,
             dropout=dropout,
             use_flash_attention=self.use_flash_attention,
+            dtype=dtype,
             rngs=rngs,
         )
         self.dropout1 = nnx.Dropout(dropout, rngs=rngs)
@@ -426,13 +434,14 @@ class BlockCausalLayer(nnx.Module):
                 d_model, n_heads, dropout,
                 latents_only=latents_only_time, n_latents=n_latents,
                 use_flash_attention=self.use_flash_attention,
+                dtype=dtype,
                 rngs=rngs,
             )
             self.dropout2 = nnx.Dropout(dropout, rngs=rngs)
 
         # --- MLP ---
         self.norm3 = RMSNorm(d_model, rngs=rngs)
-        self.mlp = MLP(d_model, mlp_ratio, dropout, rngs=rngs)
+        self.mlp = MLP(d_model, mlp_ratio, dropout, dtype=dtype, rngs=rngs)
         self.dropout3 = nnx.Dropout(dropout, rngs=rngs)
 
     def __call__(self, x, *, deterministic: bool = False):
@@ -468,6 +477,7 @@ class BlockCausalTransformer(nnx.Module):
         time_every: int = 4,
         latents_only_time: bool = True,
         use_flash_attention: bool = False,
+        dtype: Any = jnp.float32,
         *,
         rngs: nnx.Rngs,
     ):
@@ -482,6 +492,7 @@ class BlockCausalTransformer(nnx.Module):
                     layer_index=i, time_every=time_every,
                     latents_only_time=latents_only_time,
                     use_flash_attention=use_flash_attention,
+                    dtype=dtype,
                     rngs=rngs,
                 )
             )
@@ -511,6 +522,7 @@ class Encoder(nnx.Module):
         mae_p_min: float = 0.0,
         mae_p_max: float = 0.9,
         use_flash_attention: bool = False,
+        dtype: Any = jnp.float32,
         *,
         rngs: nnx.Rngs,
         d_patch: int = None, # Optional to allow partial compat, but really needed.
@@ -521,6 +533,7 @@ class Encoder(nnx.Module):
         self.d_bottleneck = d_bottleneck
         self.mae_p_min = mae_p_min
         self.mae_p_max = mae_p_max
+        self.dtype = dtype
         
         # We need in_features for nnx.Linear.
         # If d_patch is None, we are in trouble unless we use lazy.
@@ -533,8 +546,8 @@ class Encoder(nnx.Module):
              # I will just add d_patch param. Users need to update calls.
              raise ValueError("d_patch (input dimension) must be provided for nnx Encoder")
 
-        self.patch_proj = nnx.Linear(d_patch, d_model, use_bias=True, rngs=rngs)
-        self.bottleneck_proj = nnx.Linear(d_model, d_bottleneck, use_bias=True, rngs=rngs)
+        self.patch_proj = nnx.Linear(d_patch, d_model, use_bias=True, dtype=dtype, rngs=rngs)
+        self.bottleneck_proj = nnx.Linear(d_model, d_bottleneck, use_bias=True, dtype=dtype, rngs=rngs)
         
         self.layout = TokenLayout(n_latents=n_latents, segments=((Modality.IMAGE, n_patches),))
         self.modality_ids = self.layout.modality_ids()            # (S,)
@@ -550,6 +563,7 @@ class Encoder(nnx.Module):
             time_every=time_every,
             latents_only_time=latents_only_time,
             use_flash_attention=use_flash_attention,
+            dtype=dtype,
             rngs=rngs,
         )
         key = rngs.params()
@@ -670,6 +684,7 @@ class Decoder(nnx.Module):
         self.time_every = time_every
         self.latents_only_time = latents_only_time
         self.use_flash_attention = use_flash_attention
+        self.dtype = dtype
         
         if d_bottleneck is None:
              raise ValueError("d_bottleneck must be provided for nnx Decoder")
@@ -677,12 +692,12 @@ class Decoder(nnx.Module):
         self.layout = TokenLayout(n_latents=n_latents, segments=((Modality.IMAGE, n_patches),))
         self.modality_ids = self.layout.modality_ids()
         
-        self.up_proj = nnx.Linear(d_bottleneck, d_model, use_bias=True, rngs=rngs)
+        self.up_proj = nnx.Linear(d_bottleneck, d_model, use_bias=True, dtype=dtype, rngs=rngs)
         
         key = rngs.params()
         self.patch_queries = nnx.Param(jax.random.normal(key, (n_patches, d_model)) * 0.02)
         
-        self.patch_head = nnx.Linear(d_model, d_patch, use_bias=True, rngs=rngs)
+        self.patch_head = nnx.Linear(d_model, d_patch, use_bias=True, dtype=dtype, rngs=rngs)
         
         self.transformer = BlockCausalTransformer(
             d_model=d_model,
@@ -696,6 +711,7 @@ class Decoder(nnx.Module):
             time_every=time_every,
             latents_only_time=latents_only_time,
             use_flash_attention=use_flash_attention,
+            dtype=dtype,
             rngs=rngs,
         )
 
