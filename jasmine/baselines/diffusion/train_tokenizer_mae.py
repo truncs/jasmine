@@ -358,12 +358,13 @@ def restore_checkpoint_if_needed(
             )
         else:
             restore_args = ocp.args.Composite(
+                partial_restore=True,
                 model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
                 train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
             )
         if restore_step:
             restored = checkpoint_manager.restore(
-                restore_step, args=restore_args, partial_restore=True)
+                restore_step, args=restore_args)
             restored_optimizer_state = restored["model_state"]
             nnx.update(optimizer, restored_optimizer_state)
             train_iterator = restored["train_dataloader_state"]
