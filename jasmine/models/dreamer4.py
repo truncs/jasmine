@@ -23,14 +23,14 @@ class Modality(IntEnum):
     AGENT = 7
     # add more as needed
 
-@dataclasses.dataclass  # standard dataclass often sufficient, or flax.struct.dataclass
+@nnx.dataclass  # standard dataclass often sufficient, or flax.struct.dataclass
 class TokenLayout:
     """
     Ordered token layout for a single timestep: latents first (if any),
     then a sequence of (modality, count) segments.
     """
-    n_latents: int
-    segments: Tuple[Tuple[Modality, int], ...]  # e.g., ((Modality.IMAGE, n_patches), (Modality.ACTION, n_act), ...)
+    n_latents: int = nnx.static()
+    segments: Tuple[Tuple[Modality, int], ...]  = nnx.static() # e.g., ((Modality.IMAGE, n_patches), (Modality.ACTION, n_act), ...)
 
     def S(self) -> int:
         return self.n_latents + sum(n for _, n in self.segments)
@@ -188,7 +188,7 @@ class SpaceSelfAttentionModality(nnx.Module):
         self, 
         d_model: int, 
         n_heads: int, 
-        modality_ids: jnp.ndarray,
+        modality_ids: jnp.ndarray = nnx.static(),
         n_latents: int,
         mode: str = "encoder",
         dropout: float = 0.0,
@@ -283,7 +283,7 @@ class SpaceSelfAttentionModality(nnx.Module):
             raise ValueError(f"Unknown mode {self.mode}")
 
         # Save (1,1,S,S) so it broadcasts over batch*time and heads -> (B*T, 1, S, S)
-        self.modality_mask = mask[None, None, :, :]                   # (1,1,S,S)
+        self.modality_mask = nnx.static(mask[None, None, :, :])                # (1,1,S,S)
         
         self.attention = nnx.MultiHeadAttention(
             num_heads=n_heads,
@@ -386,7 +386,7 @@ class BlockCausalLayer(nnx.Module):
         d_model: int,
         n_heads: int,
         n_latents: int,
-        modality_ids: jnp.ndarray,
+        modality_ids: jnp.ndarray = nnx.static(),
         space_mode: str,
         dropout: float = 0.0,
         mlp_ratio: float = 4.0,
@@ -470,7 +470,7 @@ class BlockCausalTransformer(nnx.Module):
         n_heads: int,
         depth: int,
         n_latents: int,
-        modality_ids: jnp.ndarray,
+        modality_ids: jnp.ndarray = nnx.static(),
         space_mode: str,
         dropout: float = 0.0,
         mlp_ratio: float = 4.0,
@@ -615,33 +615,6 @@ class Encoder(nnx.Module):
         # Most robust way: pass `rngs` if APIs support it. 
         # But `nnx.Dropout.__call__` signature: `(x, *, deterministic=..., rngs=...)`.
         # So I should pass rngs.
-        encoded_tokens = self.transformer(tokens, deterministic=deterministic) # pass rngs?
-        # My BlockCausalTransformer.__call__ didn't accept rngs! I should have added it?
-        # It calls layers which call dropout.
-        # Layers call `self.dropout(y, deterministic=...)`.
-        # If `nnx.Dropout` is used as a Module, does it auto-find RNG?
-        # It finds `rngs` from the context or scope?
-        # nnx doesn't use context manager for rngs like Linen `make_rng`.
-        # It expects `rngs` argument in `__call__` OR stateful RNG.
-        # But `nnx.Dropout` documentation says it stores the collection name (default 'dropout').
-        # When called, it needs to generate a key.
-        # If I don't pass `rngs` to `__call__`, it might fail?
-        # Let's assume I don't need to pass rngs explicitly to `__call__` of my submodules IF I'm using "functional" style `nnx.split` / `pop` etc?
-        # Actually, `nnx.Dropout` is a Module. 
-        # `y = self.dropout(x)`
-        # `nnx` separates state.
-        # OK, I will trust that standard usage works: `rngs` are passed to `nnx.call` or similar top-level,
-        # but inside `__call__` methods, we don't pass them manually unless using functional.
-        # Wait, `MAEReplacer` I WROTE uses `rngs` arg explicitly.
-        # `nnx.Dropout` implementation source: `__call__(self, inputs, *, deterministic, rngs=None)`.
-        # If `rngs` is None, it tries `self.make_rng(self.rng_collection)`.
-        # So it uses `make_rng` which works if we are wrapped in `nnx.Rngs` context?
-        # No, `nnx.State` handling.
-        # I will stick to: `BlockCausalTransformer` should handle its own dropout calls.
-        # I'll rely on `nnx` magic for `Dropout`.
-        # But `MAEReplacer` I made explicit `rngs` arg. I will use it.
-        pass
-
         encoded_tokens = self.transformer(tokens, deterministic=deterministic)
 
         # 6) Project latent tokens to bottleneck and tanh
@@ -691,7 +664,7 @@ class Decoder(nnx.Module):
              raise ValueError("d_bottleneck must be provided for nnx Decoder")
 
         self.layout = TokenLayout(n_latents=n_latents, segments=((Modality.IMAGE, n_patches),))
-        self.modality_ids = self.layout.modality_ids()
+        self.modality_ids = nnx.static(self.layout.modality_ids())
         
         self.up_proj = nnx.Linear(d_bottleneck, d_model, use_bias=True, dtype=dtype, rngs=rngs)
         

@@ -170,7 +170,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
     num_patches = (args.image_height // args.patch_size) * (args.image_width // args.patch_size)
     d_patch = args.image_channels * args.patch_size ** 2
     enc_n_latents = 128
-    enc_d_bottleneck = 32
+    enc_d_bottleneck = 16
 
     enc_kwargs = {
         "d_model": 512, 
