@@ -299,8 +299,11 @@ class SpaceSelfAttentionModality(nnx.Module):
         B, T, S, D = x.shape
         x_ = x.reshape(B*T, S, D)
 
-        # Flax MHA mask shape can be (batch, num_heads, q_len, k_len). We want one mask per (B*T).
-        mask = jnp.broadcast_to(self.modality_mask, (B*T, 1, S, S))   # (B*T,1,S,S)
+        if self.use_flash_attention:
+             mask = self.modality_mask[0, 0] # (S, S)
+        else:
+             # Flax MHA mask shape can be (batch, num_heads, q_len, k_len). We want one mask per (B*T).
+             mask = jnp.broadcast_to(self.modality_mask, (B*T, 1, S, S))   # (B*T,1,S,S)
 
         y_ = self.attention(
             x_, x_, 
@@ -339,10 +342,15 @@ class TimeSelfAttention(nnx.Module):
             assert 0 < self.n_latents <= S
             lat = x[:, :, :self.n_latents, :]                # (B, T, L, D)
             lat_btld = lat.transpose(0, 2, 1, 3).reshape(B*self.n_latents, T, D)  # (B*L, T, D)
-            causal = nnx.make_causal_mask(jnp.ones((B*self.n_latents, T), dtype=bool))
+            
+            if self.use_flash_attention:
+                mask = None
+            else:
+                mask = nnx.make_causal_mask(jnp.ones((B*self.n_latents, T), dtype=bool))
+                
             out = self.attention(
                 lat_btld, lat_btld,
-                mask=causal,
+                mask=mask,
                 deterministic=deterministic,
                 decode=False,
             )
@@ -351,10 +359,15 @@ class TimeSelfAttention(nnx.Module):
             return x
         else:
             x_bstd = x.transpose(0, 2, 1, 3).reshape(B*S, T, D)  # (B*S, T, D)
-            causal = nnx.make_causal_mask(jnp.ones((B*S, T), dtype=bool))
+            
+            if self.use_flash_attention:
+                mask = None
+            else:
+                mask = nnx.make_causal_mask(jnp.ones((B*S, T), dtype=bool))
+
             out = self.attention(
                 x_bstd, x_bstd,
-                mask=causal,
+                mask=mask,
                 deterministic=deterministic,
                 decode=False,
             )
@@ -398,7 +411,6 @@ class BlockCausalLayer(nnx.Module):
             n_heads=n_heads,
             modality_ids=modality_ids,
             n_latents=n_latents,
-            mode=space_mode,
             mode=space_mode,
             dropout=dropout,
             use_flash_attention=self.use_flash_attention,
