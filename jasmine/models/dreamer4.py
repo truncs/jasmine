@@ -283,7 +283,7 @@ class SpaceSelfAttentionModality(nnx.Module):
             raise ValueError(f"Unknown mode {self.mode}")
 
         # Save (1,1,S,S) so it broadcasts over batch*time and heads -> (B*T, 1, S, S)
-        self.modality_mask = nnx.static(mask[None, None, :, :])                # (1,1,S,S)
+        self.modality_mask = mask[None, None, :, :]          # (1,1,S,S)
         
         self.attention = nnx.MultiHeadAttention(
             num_heads=n_heads,
