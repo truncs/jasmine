@@ -154,7 +154,6 @@ class Dreamer4TokenizerMAE(nnx.Module):
         recon_patches_flat = self.decoder(z_latents)
         
         # 4. Unpatchify
-        recon_patches = recon_patches_flat.reshape(B, T, Hp, Wp, D)
         recon_videos = unpatchify(recon_patches, self.patch_size, H, W)
         
         outputs = {
