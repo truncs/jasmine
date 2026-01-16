@@ -299,7 +299,8 @@ class SpaceSelfAttentionModality(nnx.Module):
         y_ = self.attention(
             x_, x_, 
             mask=mask, 
-            deterministic=deterministic
+            deterministic=deterministic,
+            decode=False,
         )
 
         y = y_.reshape(B, T, S, D)
@@ -333,6 +334,7 @@ class TimeSelfAttention(nnx.Module):
                 lat_btld, lat_btld,
                 mask=causal,
                 deterministic=deterministic,
+                decode=False,
             )
             out = out.reshape(B, self.n_latents, T, D).transpose(0, 2, 1, 3)      # back to (B, T, L, D)
             x = x.at[:, :, :self.n_latents, :].set(out)
@@ -344,6 +346,7 @@ class TimeSelfAttention(nnx.Module):
                 x_bstd, x_bstd,
                 mask=causal,
                 deterministic=deterministic,
+                decode=False,
             )
             out = out.reshape(B, S, T, D).transpose(0, 2, 1, 3)  # back to (B, T, S, D)
             return out
