@@ -670,6 +670,7 @@ class Decoder(nnx.Module):
         time_every: int = 4,
         latents_only_time: bool = True,
         use_flash_attention: bool = False,
+        dtype: Any = jnp.float32,
         *,
         rngs: nnx.Rngs,
     ):
