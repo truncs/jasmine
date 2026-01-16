@@ -9,6 +9,7 @@ from typing import Optional, Tuple, Any
 from einops import rearrange
 import math
 import dataclasses
+from jasmine.utils.nn import _create_flash_attention_fn
 
 class Modality(IntEnum):
     LATENT   = -1
@@ -191,6 +192,7 @@ class SpaceSelfAttentionModality(nnx.Module):
         n_latents: int,
         mode: str = "encoder",
         dropout: float = 0.0,
+        use_flash_attention: bool = False,
         *,
         rngs: nnx.Rngs,
     ):
@@ -200,6 +202,7 @@ class SpaceSelfAttentionModality(nnx.Module):
         self.n_latents = n_latents
         self.mode = mode
         self.dropout = dropout
+        self.use_flash_attention = use_flash_attention
 
         # Cache a (S,S) boolean mask indicating allowed key for each query index, per mode.
         S = int(self.modality_ids.shape[0])
@@ -285,6 +288,9 @@ class SpaceSelfAttentionModality(nnx.Module):
             in_features=d_model,
             qkv_features=d_model,
             dropout_rate=dropout,
+            attention_fn=_create_flash_attention_fn(
+                self.use_flash_attention, is_causal=False
+            ),
             rngs=rngs,
         )
 
@@ -307,18 +313,22 @@ class SpaceSelfAttentionModality(nnx.Module):
         return y
 
 class TimeSelfAttention(nnx.Module):
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.0, latents_only: bool = True, n_latents: int = 0, *, rngs: nnx.Rngs):
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.0, latents_only: bool = True, n_latents: int = 0, use_flash_attention: bool = False, *, rngs: nnx.Rngs):
         self.d_model = d_model
         self.n_heads = n_heads
         self.dropout = dropout
         self.latents_only = latents_only
         self.n_latents = n_latents
+        self.use_flash_attention = use_flash_attention
         
         self.attention = nnx.MultiHeadAttention(
             num_heads=n_heads,
             in_features=d_model,
             qkv_features=d_model,
             dropout_rate=dropout,
+            attention_fn=_create_flash_attention_fn(
+                self.use_flash_attention, is_causal=True
+            ),
             rngs=rngs,
         )
 
@@ -362,6 +372,7 @@ class BlockCausalLayer(nnx.Module):
         space_mode: str,
         dropout: float = 0.0,
         mlp_ratio: float = 4.0,
+        use_flash_attention: bool = False,
         layer_index: int = 0,
         time_every: int = 4,
         latents_only_time: bool = True,
@@ -374,6 +385,7 @@ class BlockCausalLayer(nnx.Module):
         self.modality_ids = modality_ids
         self.space_mode = space_mode
         self.dropout = dropout
+        self.use_flash_attention = use_flash_attention
         self.mlp_ratio = mlp_ratio
         self.layer_index = layer_index
         self.time_every = time_every
@@ -387,7 +399,9 @@ class BlockCausalLayer(nnx.Module):
             modality_ids=modality_ids,
             n_latents=n_latents,
             mode=space_mode,
+            mode=space_mode,
             dropout=dropout,
+            use_flash_attention=self.use_flash_attention,
             rngs=rngs,
         )
         self.dropout1 = nnx.Dropout(dropout, rngs=rngs)
@@ -399,6 +413,7 @@ class BlockCausalLayer(nnx.Module):
             self.time_attn = TimeSelfAttention(
                 d_model, n_heads, dropout,
                 latents_only=latents_only_time, n_latents=n_latents,
+                use_flash_attention=self.use_flash_attention,
                 rngs=rngs,
             )
             self.dropout2 = nnx.Dropout(dropout, rngs=rngs)
@@ -440,6 +455,7 @@ class BlockCausalTransformer(nnx.Module):
         mlp_ratio: float = 4.0,
         time_every: int = 4,
         latents_only_time: bool = True,
+        use_flash_attention: bool = False,
         *,
         rngs: nnx.Rngs,
     ):
@@ -453,6 +469,7 @@ class BlockCausalTransformer(nnx.Module):
                     dropout=dropout, mlp_ratio=mlp_ratio,
                     layer_index=i, time_every=time_every,
                     latents_only_time=latents_only_time,
+                    use_flash_attention=use_flash_attention,
                     rngs=rngs,
                 )
             )
@@ -463,62 +480,9 @@ class BlockCausalTransformer(nnx.Module):
             x = layer(x, deterministic=deterministic)
         return x
 
+
+
 class Encoder(nnx.Module):
-    def __init__(
-        self,
-        d_model: int,
-        n_latents: int,
-        n_patches: int,
-        n_heads: int,
-        depth: int,
-        d_bottleneck: int,
-        dropout: float = 0.0,
-        mlp_ratio: float = 4.0,
-        time_every: int = 4,
-        latents_only_time: bool = True,
-        mae_p_min: float = 0.0,
-        mae_p_max: float = 0.9,
-        *,
-        rngs: nnx.Rngs,
-        d_patch: int,
-    ):
-        self.d_model = d_model
-        self.n_latents = n_latents
-        self.n_patches = n_patches
-        self.d_bottleneck = d_bottleneck
-        self.mae_p_min = mae_p_min
-        self.mae_p_max = mae_p_max
-        self.d_patch = d_patch
-
-        self.patch_proj = nnx.Linear(d_patch, d_model, use_bias=True, rngs=rngs) 
-        # Original: patch_proj = nn.Dense(d_model). patch_tokens input arg shape?
-        # Looking at original code: __call__(patch_tokens). patch_tokens shape usually (B,T,Np,D_in).
-        # We assume last dim is inferred or known. nnx.Linear requires in_features.
-        # But wait, original code: self.patch_proj = nn.Dense(self.d_model, name="patch_proj")
-        # nn.Dense infers input shape. nnx.Linear does not (unless using lazy init, but preferred is explicit).
-        # The input patch_tokens usually have some dim. Let's look at `test_encoder_decoder`:
-        # x = jnp.ones((B, T, n_patches, d_patch)).
-        # So input dim is d_patch. I should add d_patch argument or infer it?
-        # The original code didn't have d_patch in Encoder __init__ args, it was inferred.
-        # I SHOULD ADD d_patch (input dim) to __init__ arguments to be safe in nnx, OR use lazy init.
-        # But `test_encoder_decoder` passes `d_model=8` etc. It doesn't pass input dim to Encoder init.
-        # However, `Encoder` is called with `patch_tokens`.
-        # I will change signature to accept `d_input` or similar if I can, OR use `nnx.Linear` with lazy initialization if supported, 
-        # OR assume `patch_tokens` last dim is same as something? No.
-        # In the test, `d_patch=3`.
-        # FOR NOW, I will add `d_patch` or `d_input` to Encoder __init__. 
-        # Wait, I can't easily change the callers if they are external (though task says internal only).
-        # But wait, `nn.Dense` is lazy. `nnx.Linear` needs `in_features`.
-        # I will look at `ActionEncoder`: `base_emb` is (d_model,).
-        # I will look at `Dynamics`: `spatial_proj` inputs `packed_enc_tokens` (d_spatial?).
-        # `Dynamics` init has `d_spatial`.
-        # `Encoder` init in original code did NOT have input dim.
-        # I will assume `d_model` if ambiguous? No.
-        # I will use a custom Linear that infers shape? Or just add the argument.
-        # Adding `d_patch` to Encoder is cleanest. I will add it.
-        pass
-
-    # Re-writing __init__ correctly.
     def __init__(
         self,
         d_model: int,
@@ -534,6 +498,7 @@ class Encoder(nnx.Module):
         latents_only_time: bool = True,
         mae_p_min: float = 0.0,
         mae_p_max: float = 0.9,
+        use_flash_attention: bool = False,
         *,
         rngs: nnx.Rngs,
         d_patch: int = None, # Optional to allow partial compat, but really needed.
@@ -572,6 +537,7 @@ class Encoder(nnx.Module):
             dropout=dropout, mlp_ratio=mlp_ratio,
             time_every=time_every,
             latents_only_time=latents_only_time,
+            use_flash_attention=use_flash_attention,
             rngs=rngs,
         )
         key = rngs.params()
@@ -579,29 +545,7 @@ class Encoder(nnx.Module):
         
         self.mae = MAEReplacer(d_model=d_model, p_min=mae_p_min, p_max=mae_p_max, rngs=rngs)
 
-    def __call__(self, patch_tokens, *, deterministic: bool = True) -> tuple[jnp.ndarray, tuple[jnp.ndarray, jnp.ndarray], jnp.ndarray]: 
-        # Added extra return? No, existing return type hint: tuple[jnp.ndarray, tuple[jnp.ndarray, jnp.ndarray]]
-        
-        # 1) Project patches to D_model
-        proj_patches = self.patch_proj(patch_tokens)  # (B,T,Np,D)
 
-        # 2) MAE mask-and-replace on patch tokens (encoder input only)
-        # We need rngs for MAE.
-        # Ideally we pass rngs in __call__.
-        # I will access internal rngs or passed rngs? 
-        # As per nnx design, we should pass rngs if we want stochasticity.
-        # self.mae(..., rngs=rngs). 
-        # But where do I get rngs? From arguments.
-        # I need to update signature.
-        # But let's assume we can use `self.mae` which might have stored rngs? No, layers are stateless regarding RNG stream state usually, unless we pass rngs.
-        # Wait, `MAEReplacer` I defined earlier takes `rngs`.
-        # I should pass `nnx.Rngs` to `Encoder.__call__`? 
-        # Or I can use `nnx.make_rng` inside if I have the stream?
-        # Standard: `call(x, rngs=nnx.Rngs(params=...))`
-        # But `MAEReplacer` needs 'mae' stream.
-        # I will rely on `rngs` passed to `__call__`.
-        # Default behavior: pass rngs. Callers must provide.
-        pass
 
     def __call__(self, patch_tokens, *, deterministic: bool = True, rngs: Optional[nnx.Rngs] = None) -> tuple[jnp.ndarray, tuple[jnp.ndarray, jnp.ndarray]]:
         # 1) Project patches to D_model
@@ -680,51 +624,12 @@ class Encoder(nnx.Module):
 
         return proj_tokens, (patch_mask, keep_prob)  # keep mask if you want diagnostics
 
+
+
 class Decoder(nnx.Module):
     """
     MAE-style decoder.
     """
-    def __init__(
-        self,
-        d_model: int,
-        n_heads: int,
-        depth: int,
-        n_latents: int,
-        n_patches: int,
-        d_patch: int,
-        dropout: float = 0.0,
-        mlp_ratio: float = 4.0,
-        time_every: int = 4,
-        latents_only_time: bool = True,
-        *,
-        rngs: nnx.Rngs,
-        d_bottleneck: int,
-    ):
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.depth = depth
-        self.n_latents = n_latents
-        self.n_patches = n_patches
-        self.d_patch = d_patch
-        self.d_bottleneck = d_bottleneck
-        self.dropout = dropout
-        self.mlp_ratio = mlp_ratio
-        self.time_every = time_every
-        self.latents_only_time = latents_only_time
-
-        self.layout = TokenLayout(n_latents=n_latents, segments=((Modality.IMAGE, n_patches),))
-        self.modality_ids = self.layout.modality_ids()
-        
-        self.up_proj = nnx.Linear(d_bottleneck, d_model, use_bias=True, rngs=rngs) 
-        # Code: z: (B, T, N_l, d_bottleneck).
-        # up_proj: z -> d_model.
-        # But I need d_bottleneck dim in arguments!
-        # The original code: self.up_proj = nn.Dense(d_model).
-        # It inferred input dim from `z`.
-        # I MUST add d_bottleneck to Decoder init args.
-        # I'll add d_bottleneck arg.
-        pass
-
     def __init__(
         self,
         d_model: int,
@@ -738,6 +643,7 @@ class Decoder(nnx.Module):
         mlp_ratio: float = 4.0,
         time_every: int = 4,
         latents_only_time: bool = True,
+        use_flash_attention: bool = False,
         *,
         rngs: nnx.Rngs,
     ):
@@ -751,6 +657,7 @@ class Decoder(nnx.Module):
         self.mlp_ratio = mlp_ratio
         self.time_every = time_every
         self.latents_only_time = latents_only_time
+        self.use_flash_attention = use_flash_attention
         
         if d_bottleneck is None:
              raise ValueError("d_bottleneck must be provided for nnx Decoder")
@@ -776,6 +683,7 @@ class Decoder(nnx.Module):
             mlp_ratio=mlp_ratio,
             time_every=time_every,
             latents_only_time=latents_only_time,
+            use_flash_attention=use_flash_attention,
             rngs=rngs,
         )
 
@@ -855,6 +763,7 @@ class Dynamics(nnx.Module):
         mlp_ratio: float = 4.0,
         time_every: int = 4,
         space_mode: str = "wm_agent_isolated",
+        use_flash_attention: bool = False,
         *,
         rngs: nnx.Rngs,
     ):
@@ -907,6 +816,7 @@ class Dynamics(nnx.Module):
             mlp_ratio=mlp_ratio,
             time_every=time_every,
             latents_only_time=False,
+            use_flash_attention=use_flash_attention,
             rngs=rngs,
         )
 
