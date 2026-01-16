@@ -802,7 +802,7 @@ class Decoder(nnx.Module):
         
         # 6) Prediction head over the patch-query slice
         x_patches = x[:, :, N_l:, :]                         # (B, T, Np, D)
-        pred_btnd = nn.sigmoid(self.patch_head(x_patches))  # (B,T,Np,D_patch)
+        pred_btnd = nnx.sigmoid(self.patch_head(x_patches))  # (B,T,Np,D_patch)
         return pred_btnd
 
 class ActionEncoder(nnx.Module):
