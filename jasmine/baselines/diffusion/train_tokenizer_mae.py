@@ -22,7 +22,9 @@ import flax.nnx as nnx
 import lpips_jax
 
 from jasmine.models.tokenizer import TokenizerMAE
+from jasmine.models.dreamer4 import Encoder, Decoder
 from jasmine.utils.dataloader import get_dataloader
+from jasmine.utils.preprocess import patchify, unpatchify
 from jasmine.utils.train_utils import (
     get_lr_schedule,
     count_parameters_by_component,
@@ -87,31 +89,130 @@ class Args:
     prefetch_buffer_size: int = 1
 
 
-def build_model(args: Args, rng: jax.Array) -> tuple[TokenizerMAE, jax.Array]:
+
+class Dreamer4TokenizerMAE(nnx.Module):
+    def __init__(
+        self,
+        image_height: int,
+        image_width: int,
+        patch_size: int,
+        in_dim: int,
+        encoder_kwargs: dict,
+        decoder_kwargs: dict,
+        dtype: jnp.dtype = jnp.float32,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        self.image_height = image_height
+        self.image_width = image_width
+        self.patch_size = patch_size
+        self.in_dim = in_dim
+        self.dtype = dtype
+
+        self.encoder = Encoder(**encoder_kwargs, rngs=rngs)
+        self.decoder = Decoder(**decoder_kwargs, rngs=rngs)
+
+    def __call__(self, batch: dict, training: bool = True) -> dict:
+        rngs = batch.get("rng", None)
+        # 1. Patchify
+        videos = batch["videos"]
+        B, T, H, W, C = videos.shape
+        # patchify expects (B, T, H, W, C) -> (B, T, H//P, W//P, P*P*C)
+        # But wait, jasmine.utils.preprocess.patchify:
+        # returns (B, T, H//P, W//P, P*P*C).
+        # Encoder expects (B, T, N_patches, d_patch) flat.
+        
+        patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
+        B, T, Hp, Wp, D = patches.shape
+        patches_flat = patches.reshape(B, T, Hp*Wp, D)
+
+        # 2. Encode
+        # Encoder.__call__ returns: proj_tokens, (patch_mask, keep_prob)
+        # We need rngs for MAE inside Encoder.
+        # Encoder internal uses self.mae(..., rngs=rngs) (based on my knowledge of my fix, wait I didn't verify Encoder call usage of rngs fully but I saw it uses self.mae).
+        # Actually in Step 31 `Encoder.__call__` I wrote: `self.mae(proj_patches, rngs=rngs)`.
+        # So I need to pass rngs.
+        # But `batch` might not have `rngs` object, it has `rng` key which is a jax.random.PRNGKey (array).
+        # nnx.Rngs object is passed to __init__, but for __call__ we usually need `nnx.Rngs` or explicit key if `nnx` style.
+        # In `train_tokenizer_mae.py` `train_step`, it does `model.train()`.
+        # The `TokenizerMAE` in `tokenizer.py` `mask_and_encode` takes `rng: jax.Array`.
+        # My `Encoder` in `dreamer4.py` uses `self.mae(..., rngs=rngs)`.
+        # I need to adapt. `nnx.Rngs` is a stateful RNG manager.
+        # If I pass `rng` array, I can wrap it?
+        # Or I create `nnx.Rngs` from key?
+        # `nnx.Rngs` usage: `rngs = nnx.Rngs(params=key1, mae=key2)`.
+        # `batch["rng"]` is a single key.
+        # I will split it and create nnx.Rngs.
+        
+        mae_rng = nnx.Rngs(mae=rngs) if rngs is not None else None
+        
+        # Encoder call:
+        z_latents, (mask, keep) = self.encoder(patches_flat, rngs=mae_rng)
+        
+        # 3. Decode
+        # Decoder(z) -> pred_patches (B, T, Np, D_patch)
+        recon_patches_flat = self.decoder(z_latents)
+        
+        # 4. Unpatchify
+        recon_patches = recon_patches_flat.reshape(B, T, Hp, Wp, D)
+        recon_videos = unpatchify(recon_patches, self.patch_size, H, W)
+        
+        outputs = {
+            "recon": recon_videos,
+            "z": z_latents,
+            "mask": mask
+        }
+        return outputs
+
+def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
-    tokenizer = TokenizerMAE(
+    
+    num_patches = (args.image_height // args.patch_size) * (args.image_width // args.patch_size)
+    d_patch = args.image_channels * args.patch_size ** 2
+    enc_n_latents = 128
+    enc_d_bottleneck = 32
+
+    enc_kwargs = {
+        "d_model": 512, 
+        "n_latents": enc_n_latents, 
+        "n_patches": num_patches, 
+        "n_heads": 8, 
+        "depth": 8, 
+        "dropout": 0.05,
+        "d_bottleneck": enc_d_bottleneck, 
+        "mae_p_min": 0.0, 
+        "mae_p_max": 0.9, 
+        "time_every": 4,
+        "d_patch": d_patch, 
+    }
+    
+    dec_kwargs = {
+        "d_model": 512, 
+        "n_heads": 8, 
+        "n_patches": num_patches, 
+        "n_latents": enc_n_latents, 
+        "depth": 12,
+        "d_patch": d_patch, 
+        "dropout": 0.05, 
+        "time_every": 4,
+        "d_bottleneck": enc_d_bottleneck, # Added this requirement
+    }
+
+    tokenizer = Dreamer4TokenizerMAE(
         image_height=args.image_height,
         image_width=args.image_width,
-        in_dim=args.image_channels,
-        model_dim=args.model_dim,
-        ffn_dim=args.ffn_dim,
-        latent_dim=args.latent_dim,
-        num_latents=args.num_latents,
         patch_size=args.patch_size,
-        num_blocks=args.num_blocks,
-        num_heads=args.num_heads,
-        dropout=args.dropout,
-        max_mask_ratio=args.max_mask_ratio,
-        param_dtype=args.param_dtype,
+        in_dim=args.image_channels,
+        encoder_kwargs=enc_kwargs,
+        decoder_kwargs=dec_kwargs,
         dtype=args.dtype,
-        use_flash_attention=args.use_flash_attention,
         rngs=rngs,
     )
     return tokenizer, rng
 
 
-def build_optimizer(model: TokenizerMAE, args: Args) -> nnx.ModelAndOptimizer:
+def build_optimizer(model: Dreamer4TokenizerMAE, args: Args) -> nnx.ModelAndOptimizer:
     lr_schedule = get_lr_schedule(
         args.lr_schedule,
         args.init_lr,
@@ -347,7 +448,7 @@ def main(args: Args) -> None:
 
     # --- Define loss and train step (close over args) ---
     def tokenizer_loss_fn(
-        model: TokenizerMAE, inputs: dict, lpips_evaluator, training: bool = False
+        model: Dreamer4TokenizerMAE, inputs: dict, lpips_evaluator, training: bool = False
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
@@ -379,7 +480,7 @@ def main(args: Args) -> None:
         optimizer: nnx.ModelAndOptimizer, lpips_evaluator, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
         def loss_fn(
-            model: TokenizerMAE,
+            model: Dreamer4TokenizerMAE,
         ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             model.train()
             return tokenizer_loss_fn(model, inputs, lpips_evaluator, training=True)
@@ -399,7 +500,7 @@ def main(args: Args) -> None:
 
     @nnx.jit(static_argnums=1)
     def val_step(
-        tokenizer: TokenizerMAE, lpips_evaluator, inputs: dict
+        tokenizer: Dreamer4TokenizerMAE, lpips_evaluator, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
         tokenizer.eval()
         (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, inputs,
