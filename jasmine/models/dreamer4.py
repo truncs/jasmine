@@ -664,7 +664,7 @@ class Decoder(nnx.Module):
              raise ValueError("d_bottleneck must be provided for nnx Decoder")
 
         self.layout = TokenLayout(n_latents=n_latents, segments=((Modality.IMAGE, n_patches),))
-        self.modality_ids = nnx.static(self.layout.modality_ids())
+        self.modality_ids = self.layout.modality_ids()
         
         self.up_proj = nnx.Linear(d_bottleneck, d_model, use_bias=True, dtype=dtype, rngs=rngs)
         
