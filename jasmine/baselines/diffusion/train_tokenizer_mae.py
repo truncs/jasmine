@@ -461,7 +461,7 @@ def main(args: Args) -> None:
         # Mask handling
         mask = outputs["mask"] # (B, T, Np, 1) where True means masked
         P = patch_size
-        H, W = gt.shape[2:3]
+        H, W = gt.shape[2:4]
         hn, wn = H // P, W // P
         # Convert patch mask to pixel mask: (B, T, Np, 1) -> (B, T, H, W, 1)
         pixel_mask = mask.reshape(mask.shape[0], mask.shape[1], hn, wn, 1)
