@@ -90,6 +90,22 @@ class Args:
 
 
 
+class MovingRMS(nnx.Module):
+    def __init__(self, momentum: float = 0.99):
+        self.momentum = momentum
+        self.rms = nnx.Variable(jnp.ones((), dtype=jnp.float32))
+
+    def __call__(self, x: jax.Array, training: bool = True) -> jax.Array:
+        if training:
+            # Update running RMS estimate: RMS = sqrt(E[x^2])
+            # For scalar loss, mean(square(x)) is just x^2
+            ms = jnp.mean(jnp.square(x))
+            self.rms.value = self.momentum * self.rms.value + (1 - self.momentum) * jnp.sqrt(ms + 1e-8)
+        
+        # Normalize by stop-gradiented RMS to avoid differentiating through the moving average
+        return x / jax.lax.stop_gradient(jnp.maximum(self.rms.value, 1e-8))
+
+
 class Dreamer4TokenizerMAE(nnx.Module):
     def __init__(
         self,
@@ -111,6 +127,8 @@ class Dreamer4TokenizerMAE(nnx.Module):
 
         self.encoder = Encoder(**encoder_kwargs, rngs=rngs)
         self.decoder = Decoder(**decoder_kwargs, rngs=rngs)
+        self.mse_norm = MovingRMS()
+        self.lpips_norm = MovingRMS()
 
     def __call__(self, batch: dict, training: bool = True) -> dict:
         rngs = batch.get("rng", None)
@@ -482,15 +500,24 @@ def main(args: Args) -> None:
         lpips = lpips_evaluator(jax.lax.collapse(gt_masked, 0, 2),
                                 jax.lax.collapse(recon_masked, 0, 2)).mean()
 
+        # RMS Normalization
+        normalized_mse = model.mse_norm(mse, training=training)
+        normalized_lpips = model.lpips_norm(lpips, training=training)
+
         gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
         recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
         psnr = jnp.asarray(pix.psnr(gt_clipped, recon)).mean()
         ssim = jnp.asarray(pix.ssim(gt_clipped, recon)).mean()
 
-        loss = mse + 0.3*lpips
+        loss = normalized_mse + 0.3 * normalized_lpips
 
         metrics = dict(
             mse=mse,
+            lpips=lpips,
+            normalized_mse=normalized_mse,
+            normalized_lpips=normalized_lpips,
+            mse_rms=model.mse_norm.rms.value,
+            lpips_rms=model.lpips_norm.rms.value,
             psnr=psnr,
             ssim=ssim,
             loss=loss,
