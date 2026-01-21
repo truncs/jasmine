@@ -100,10 +100,10 @@ class MovingRMS(nnx.Module):
             # Update running RMS estimate: RMS = sqrt(E[x^2])
             # For scalar loss, mean(square(x)) is just x^2
             ms = jnp.mean(jnp.square(x))
-            self.rms.value = self.momentum * self.rms.value + (1 - self.momentum) * jnp.sqrt(ms + 1e-8)
+            self.rms.value = self.momentum * self.rms.get_value() + (1 - self.momentum) * jnp.sqrt(ms + 1e-8)
         
         # Normalize by stop-gradiented RMS to avoid differentiating through the moving average
-        return x / jax.lax.stop_gradient(jnp.maximum(self.rms.value, 1e-8))
+        return x / jax.lax.stop_gradient(jnp.maximum(self.rms.get_value(), 1e-8))
 
 
 class Dreamer4TokenizerMAE(nnx.Module):
@@ -516,8 +516,8 @@ def main(args: Args) -> None:
             lpips=lpips,
             normalized_mse=normalized_mse,
             normalized_lpips=normalized_lpips,
-            mse_rms=model.mse_norm.rms.value,
-            lpips_rms=model.lpips_norm.rms.value,
+            mse_rms=model.mse_norm.rms.get_value(),
+            lpips_rms=model.lpips_norm.rms.get_value(),
             psnr=psnr,
             ssim=ssim,
             loss=loss,
