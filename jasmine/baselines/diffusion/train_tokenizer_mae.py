@@ -347,16 +347,36 @@ def main(args: Args) -> None:
 
     # --- Define loss and train step (close over args) ---
     def tokenizer_loss_fn(
-        model: TokenizerMAE, inputs: dict, lpips_evaluator, training: bool = False
+        model: TokenizerMAE, patch_size: int, inputs: dict, lpips_evaluator, training: bool = False
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
         outputs = model(inputs, training=training)
         outputs["recon"] = outputs["recon"].astype(jnp.float32)
-        mse = jnp.square(gt - outputs["recon"]).mean()
+        
+        # Mask handling
+        mask = outputs["mask"] # (B, T, Np) where True means masked
+        P = patch_size
+        H, W = gt.shape[2:4]
+        hn, wn = H // P, W // P
+        # Convert patch mask to pixel mask: (B, T, Np) -> (B, T, H, W, 1)
+        pixel_mask = mask.reshape(mask.shape[0], mask.shape[1], hn, wn, 1)
+        pixel_mask = jnp.repeat(pixel_mask, P, axis=2)
+        pixel_mask = jnp.repeat(pixel_mask, P, axis=3)
+        pixel_mask = pixel_mask.astype(jnp.float32)
+        vis_mask = 1.0 - pixel_mask
 
-        lpips = lpips_evaluator(jax.lax.collapse(gt, 0, 2),
-                                jax.lax.collapse(outputs['recon'], 0, 2)).mean()
+        # Masked MSE
+        sq_err = jnp.square(gt - outputs["recon"]) * vis_mask
+        mse = sq_err.sum() / jnp.maximum(vis_mask.sum() * gt.shape[-1], 1.0)
+
+        # Masked LPIPS
+        # We mask both gt and recon so that masked areas match perfectly (0 loss contribution)
+        gt_masked = gt * vis_mask
+        recon_masked = outputs["recon"] * vis_mask
+        
+        lpips = lpips_evaluator(jax.lax.collapse(gt_masked, 0, 2),
+                                jax.lax.collapse(recon_masked, 0, 2)).mean()
 
         gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
         recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
@@ -374,15 +394,15 @@ def main(args: Args) -> None:
 
         return loss, (outputs["recon"], metrics)
 
-    @nnx.jit(donate_argnums=0, static_argnums=1)
+    @nnx.jit(donate_argnums=0, static_argnums=(1, 2))
     def train_step(
-        optimizer: nnx.ModelAndOptimizer, lpips_evaluator, inputs: dict
+        optimizer: nnx.ModelAndOptimizer, lpips_evaluator, patch_size: int, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
         def loss_fn(
             model: TokenizerMAE,
         ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             model.train()
-            return tokenizer_loss_fn(model, inputs, lpips_evaluator, training=True)
+            return tokenizer_loss_fn(model, patch_size, inputs, lpips_evaluator, training=True)
 
         (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
             optimizer.model
@@ -397,16 +417,16 @@ def main(args: Args) -> None:
             )
         return loss, recon, metrics
 
-    @nnx.jit(static_argnums=1)
+    @nnx.jit(static_argnums=(1, 2))
     def val_step(
-        tokenizer: TokenizerMAE, lpips_evaluator, inputs: dict
+        tokenizer: TokenizerMAE, lpips_evaluator, patch_size: int, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
         tokenizer.eval()
-        (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, inputs,
+        (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, patch_size, inputs,
                                                      lpips_evaluator, training=False)
         return loss, recon, metrics
 
-    def calculate_validation_metrics(val_dataloader, tokenizer, lpips_evaluator, rng):
+    def calculate_validation_metrics(val_dataloader, tokenizer, lpips_evaluator, patch_size, rng):
         step = 0
         loss_per_step = []
         metrics_per_step = []
@@ -415,7 +435,7 @@ def main(args: Args) -> None:
         for batch in val_dataloader:
             rng, _rng_mask = jax.random.split(rng, 2)
             batch["rng"] = _rng_mask
-            loss, recon, metrics = val_step(tokenizer, lpips_evaluator, batch)
+            loss, recon, metrics = val_step(tokenizer, lpips_evaluator, patch_size, batch)
             loss_per_step.append(loss)
             metrics_per_step.append(metrics)
             step += 1
@@ -458,7 +478,7 @@ def main(args: Args) -> None:
         rng, _rng = jax.random.split(rng)
         first_batch = next(dataloader_train)
         first_batch["rng"] = _rng
-        compiled = train_step.lower(optimizer, lpips_evaluator, first_batch).compile()
+        compiled = train_step.lower(optimizer, lpips_evaluator, args.patch_size, first_batch).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
         # Do not skip the first batch during training
@@ -470,7 +490,7 @@ def main(args: Args) -> None:
             # --- Train step ---
             rng, _rng = jax.random.split(rng)
             batch["rng"] = _rng
-            loss, recon, metrics = train_step(optimizer, lpips_evaluator, batch)
+            loss, recon, metrics = train_step(optimizer, lpips_evaluator, args.patch_size, batch)
             if step == first_step:
                 print_mem_stats("After params initialized")
             step += 1
@@ -481,7 +501,7 @@ def main(args: Args) -> None:
                 print("Calculating validation metrics...")
                 rng, _rng_mask_val = jax.random.split(rng, 2)
                 val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(
-                    dataloader_val, optimizer.model, lpips_evaluator, _rng_mask_val
+                    dataloader_val, optimizer.model, lpips_evaluator, args.patch_size, _rng_mask_val
                 )
                 print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
                 val_results = {

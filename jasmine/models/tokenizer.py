@@ -270,6 +270,8 @@ class TokenizerMAE(nnx.Module):
             patch_BTNP = jnp.where(
                 mask_BTN[..., jnp.newaxis], self.mask_patch.value, patch_BTNP
             )
+        else:
+            mask_BTN = jnp.zeros((B, T, N), dtype=jnp.bool_)
         patch_BTHWP = patch_BTNP.reshape((B, T, H, W, -1))
         # --- Encode ---
 
@@ -277,7 +279,10 @@ class TokenizerMAE(nnx.Module):
         # squeeze latents through tanh as described in Dreamer 4 section 3.1
         # z_BTHWL = nnx.tanh(z_BTHWL)
         z_BTML = nnx.tanh(z_BTML)
-        outputs = dict(z=z_BTML)
+        outputs = dict(
+            z=z_BTML,
+            mask=mask_BTN,
+            )
         return outputs
 
     def decode(
