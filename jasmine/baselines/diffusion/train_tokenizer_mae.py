@@ -132,46 +132,19 @@ class Dreamer4TokenizerMAE(nnx.Module):
 
     def __call__(self, batch: dict, training: bool = True) -> dict:
         rngs = batch.get("rng", None)
-        # 1. Patchify
         videos = batch["videos"]
         B, T, H, W, C = videos.shape
-        # patchify expects (B, T, H, W, C) -> (B, T, H//P, W//P, P*P*C)
-        # But wait, jasmine.utils.preprocess.patchify:
-        # returns (B, T, H//P, W//P, P*P*C).
-        # Encoder expects (B, T, N_patches, d_patch) flat.
         
         patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
         B, T, Hp, Wp, D = patches.shape
         patches_flat = patches.reshape(B, T, Hp*Wp, D)
-
-        # 2. Encode
-        # Encoder.__call__ returns: proj_tokens, (patch_mask, keep_prob)
-        # We need rngs for MAE inside Encoder.
-        # Encoder internal uses self.mae(..., rngs=rngs) (based on my knowledge of my fix, wait I didn't verify Encoder call usage of rngs fully but I saw it uses self.mae).
-        # Actually in Step 31 `Encoder.__call__` I wrote: `self.mae(proj_patches, rngs=rngs)`.
-        # So I need to pass rngs.
-        # But `batch` might not have `rngs` object, it has `rng` key which is a jax.random.PRNGKey (array).
-        # nnx.Rngs object is passed to __init__, but for __call__ we usually need `nnx.Rngs` or explicit key if `nnx` style.
-        # In `train_tokenizer_mae.py` `train_step`, it does `model.train()`.
-        # The `TokenizerMAE` in `tokenizer.py` `mask_and_encode` takes `rng: jax.Array`.
-        # My `Encoder` in `dreamer4.py` uses `self.mae(..., rngs=rngs)`.
-        # I need to adapt. `nnx.Rngs` is a stateful RNG manager.
-        # If I pass `rng` array, I can wrap it?
-        # Or I create `nnx.Rngs` from key?
-        # `nnx.Rngs` usage: `rngs = nnx.Rngs(params=key1, mae=key2)`.
-        # `batch["rng"]` is a single key.
-        # I will split it and create nnx.Rngs.
         
         mae_rng = nnx.Rngs(mae=rngs) if rngs is not None else None
         
-        # Encoder call:
         z_latents, (mask, keep) = self.encoder(patches_flat, rngs=mae_rng)
         
-        # 3. Decode
-        # Decoder(z) -> pred_patches (B, T, Np, D_patch)
         recon_patches_flat = self.decoder(z_latents)
         
-        # 4. Unpatchify
         recon_videos = unpatchify(recon_patches_flat, self.patch_size, H, W)
         
         outputs = {
@@ -195,7 +168,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
         "n_latents": enc_n_latents, 
         "n_patches": num_patches, 
         "n_heads": 8, 
-        "depth": 12, 
+        "depth": 16, 
         "dropout": 0.05,
         "d_bottleneck": enc_d_bottleneck, 
         "mae_p_min": 0.0, 
@@ -211,7 +184,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
         "n_heads": 8, 
         "n_patches": num_patches, 
         "n_latents": enc_n_latents, 
-        "depth": 16,
+        "depth": 20,
         "d_patch": d_patch, 
         "dropout": 0.05, 
         "time_every": 4,
