@@ -160,17 +160,15 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
     
     num_patches = (args.image_height // args.patch_size) * (args.image_width // args.patch_size)
     d_patch = args.image_channels * args.patch_size ** 2
-    enc_n_latents = 128
-    enc_d_bottleneck = 16
 
     enc_kwargs = {
         "d_model": 512, 
-        "n_latents": enc_n_latents, 
+        "n_latents": args.num_latents, 
         "n_patches": num_patches, 
         "n_heads": 8, 
         "depth": 8, 
         "dropout": 0.05,
-        "d_bottleneck": enc_d_bottleneck, 
+        "d_bottleneck": args.latent_dim,
         "mae_p_min": 0.0, 
         "mae_p_max": 0.9, 
         "time_every": 4,
@@ -183,12 +181,12 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
         "d_model": 512, 
         "n_heads": 8, 
         "n_patches": num_patches, 
-        "n_latents": enc_n_latents, 
+        "n_latents": args.num_latents, 
         "depth": 12,
         "d_patch": d_patch, 
         "dropout": 0.05, 
         "time_every": 4,
-        "d_bottleneck": enc_d_bottleneck, # Added this requirement
+        "d_bottleneck": args.latent_dim,
         "use_flash_attention": args.use_flash_attention,
         "dtype": args.dtype,
     }
