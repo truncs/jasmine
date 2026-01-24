@@ -22,7 +22,9 @@ import flax.nnx as nnx
 import lpips_jax
 
 from jasmine.models.tokenizer import TokenizerMAE
+from jasmine.models.dreamer4 import Encoder, Decoder
 from jasmine.utils.dataloader import get_dataloader
+from jasmine.utils.preprocess import patchify, unpatchify
 from jasmine.utils.train_utils import (
     get_lr_schedule,
     count_parameters_by_component,
@@ -57,7 +59,7 @@ class Args:
     # Tokenizer
     model_dim: int = 512
     ffn_dim: int = 2048
-    latent_dim: int = 16
+    latent_dim: int = 32
     num_latents: int = 128
     patch_size: int = 16
     num_blocks: int = 4
@@ -87,31 +89,122 @@ class Args:
     prefetch_buffer_size: int = 1
 
 
-def build_model(args: Args, rng: jax.Array) -> tuple[TokenizerMAE, jax.Array]:
+
+class MovingRMS(nnx.Module):
+    def __init__(self, momentum: float = 0.99):
+        self.momentum = momentum
+        self.rms = nnx.Variable(jnp.ones((), dtype=jnp.float32))
+
+    def __call__(self, x: jax.Array, training: bool = True) -> jax.Array:
+        if training:
+            # Update running RMS estimate: RMS = sqrt(E[x^2])
+            # For scalar loss, mean(square(x)) is just x^2
+            ms = jnp.mean(jnp.square(x))
+            self.rms.value = self.momentum * self.rms.get_value() + (1 - self.momentum) * jnp.sqrt(ms + 1e-8)
+        
+        # Normalize by stop-gradiented RMS to avoid differentiating through the moving average
+        return x / jax.lax.stop_gradient(jnp.maximum(self.rms.get_value(), 1e-8))
+
+
+class Dreamer4TokenizerMAE(nnx.Module):
+    def __init__(
+        self,
+        image_height: int,
+        image_width: int,
+        patch_size: int,
+        in_dim: int,
+        encoder_kwargs: dict,
+        decoder_kwargs: dict,
+        dtype: jnp.dtype = jnp.float32,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        self.image_height = image_height
+        self.image_width = image_width
+        self.patch_size = patch_size
+        self.in_dim = in_dim
+        self.dtype = dtype
+
+        self.encoder = Encoder(**encoder_kwargs, rngs=rngs)
+        self.decoder = Decoder(**decoder_kwargs, rngs=rngs)
+        self.mse_norm = MovingRMS()
+        self.lpips_norm = MovingRMS()
+
+    def __call__(self, batch: dict, training: bool = True) -> dict:
+        rngs = batch.get("rng", None)
+        videos = batch["videos"]
+        B, T, H, W, C = videos.shape
+        
+        patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
+        B, T, Hp, Wp, D = patches.shape
+        patches_flat = patches.reshape(B, T, Hp*Wp, D)
+        
+        mae_rng = nnx.Rngs(mae=rngs) if rngs is not None else None
+        
+        z_latents, (mask, keep) = self.encoder(patches_flat, rngs=mae_rng)
+        
+        recon_patches_flat = self.decoder(z_latents)
+        
+        recon_videos = unpatchify(recon_patches_flat, self.patch_size, H, W)
+        
+        outputs = {
+            "recon": recon_videos,
+            "z": z_latents,
+            "mask": mask
+        }
+        return outputs
+
+def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
-    tokenizer = TokenizerMAE(
+    
+    num_patches = (args.image_height // args.patch_size) * (args.image_width // args.patch_size)
+    d_patch = args.image_channels * args.patch_size ** 2
+
+    enc_kwargs = {
+        "d_model": 512, 
+        "n_latents": args.num_latents, 
+        "n_patches": num_patches, 
+        "n_heads": 8, 
+        "depth": 8, 
+        "dropout": 0.05,
+        "d_bottleneck": args.latent_dim,
+        "mae_p_min": 0.0, 
+        "mae_p_max": 0.9, 
+        "time_every": 4,
+        "d_patch": d_patch, 
+        "use_flash_attention": args.use_flash_attention,
+        "dtype": args.dtype,
+    }
+    
+    dec_kwargs = {
+        "d_model": 512, 
+        "n_heads": 8, 
+        "n_patches": num_patches, 
+        "n_latents": args.num_latents, 
+        "depth": 12,
+        "d_patch": d_patch, 
+        "dropout": 0.05, 
+        "time_every": 4,
+        "d_bottleneck": args.latent_dim,
+        "use_flash_attention": args.use_flash_attention,
+        "dtype": args.dtype,
+    }
+
+    tokenizer = Dreamer4TokenizerMAE(
         image_height=args.image_height,
         image_width=args.image_width,
-        in_dim=args.image_channels,
-        model_dim=args.model_dim,
-        ffn_dim=args.ffn_dim,
-        latent_dim=args.latent_dim,
-        num_latents=args.num_latents,
         patch_size=args.patch_size,
-        num_blocks=args.num_blocks,
-        num_heads=args.num_heads,
-        dropout=args.dropout,
-        max_mask_ratio=args.max_mask_ratio,
-        param_dtype=args.param_dtype,
+        in_dim=args.image_channels,
+        encoder_kwargs=enc_kwargs,
+        decoder_kwargs=dec_kwargs,
         dtype=args.dtype,
-        use_flash_attention=args.use_flash_attention,
         rngs=rngs,
     )
     return tokenizer, rng
 
 
-def build_optimizer(model: TokenizerMAE, args: Args) -> nnx.ModelAndOptimizer:
+def build_optimizer(model: Dreamer4TokenizerMAE, args: Args) -> nnx.ModelAndOptimizer:
     lr_schedule = get_lr_schedule(
         args.lr_schedule,
         args.init_lr,
@@ -248,13 +341,13 @@ def restore_checkpoint_if_needed(
         abstract_optimizer_state = nnx.state(abstract_optimizer)
         if val_iterator:
             restore_args = ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
                 train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
                 val_dataloader_state=grain.checkpoint.CheckpointRestore(val_iterator),  # type: ignore
             )
         else:
             restore_args = ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
                 train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
             )
         if restore_step:
@@ -347,19 +440,19 @@ def main(args: Args) -> None:
 
     # --- Define loss and train step (close over args) ---
     def tokenizer_loss_fn(
-        model: TokenizerMAE, patch_size: int, inputs: dict, lpips_evaluator, training: bool = False
+        model: Dreamer4TokenizerMAE, patch_size: int, inputs: dict, lpips_evaluator, training: bool = False
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
         outputs = model(inputs, training=training)
         outputs["recon"] = outputs["recon"].astype(jnp.float32)
-        
+
         # Mask handling
-        mask = outputs["mask"] # (B, T, Np) where True means masked
+        mask = outputs["mask"] # (B, T, Np, 1) where True means masked
         P = patch_size
         H, W = gt.shape[2:4]
         hn, wn = H // P, W // P
-        # Convert patch mask to pixel mask: (B, T, Np) -> (B, T, H, W, 1)
+        # Convert patch mask to pixel mask: (B, T, Np, 1) -> (B, T, H, W, 1)
         pixel_mask = mask.reshape(mask.shape[0], mask.shape[1], hn, wn, 1)
         pixel_mask = jnp.repeat(pixel_mask, P, axis=2)
         pixel_mask = jnp.repeat(pixel_mask, P, axis=3)
@@ -378,15 +471,24 @@ def main(args: Args) -> None:
         lpips = lpips_evaluator(jax.lax.collapse(gt_masked, 0, 2),
                                 jax.lax.collapse(recon_masked, 0, 2)).mean()
 
+        # RMS Normalization
+        normalized_mse = model.mse_norm(mse, training=training)
+        normalized_lpips = model.lpips_norm(lpips, training=training)
+
         gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
         recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
         psnr = jnp.asarray(pix.psnr(gt_clipped, recon)).mean()
         ssim = jnp.asarray(pix.ssim(gt_clipped, recon)).mean()
 
-        loss = mse + 0.3*lpips
+        loss = normalized_mse + 0.3 * normalized_lpips
 
         metrics = dict(
             mse=mse,
+            lpips=lpips,
+            normalized_mse=normalized_mse,
+            normalized_lpips=normalized_lpips,
+            mse_rms=model.mse_norm.rms.get_value(),
+            lpips_rms=model.lpips_norm.rms.get_value(),
             psnr=psnr,
             ssim=ssim,
             loss=loss,
@@ -399,7 +501,7 @@ def main(args: Args) -> None:
         optimizer: nnx.ModelAndOptimizer, lpips_evaluator, patch_size: int, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
         def loss_fn(
-            model: TokenizerMAE,
+            model: Dreamer4TokenizerMAE,
         ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             model.train()
             return tokenizer_loss_fn(model, patch_size, inputs, lpips_evaluator, training=True)
@@ -419,7 +521,7 @@ def main(args: Args) -> None:
 
     @nnx.jit(static_argnums=(1, 2))
     def val_step(
-        tokenizer: TokenizerMAE, lpips_evaluator, patch_size: int, inputs: dict
+        tokenizer: Dreamer4TokenizerMAE, lpips_evaluator, patch_size: int, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
         tokenizer.eval()
         (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, patch_size, inputs,
