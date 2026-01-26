@@ -227,8 +227,6 @@ def _robust_restore(path: str, template: nnx.State) -> nnx.State:
     # Strategy 3: Simple positional call (returns full tree as dict/pytree)
     try:
         content = checkpointer.restore(path)
-        # If we got a full tree, we might need to manually align it with the template
-        # or it might already be what we need. 
         return content
     except Exception:
         pass
@@ -272,17 +270,6 @@ def restore_model_state(
     return restore_step
 
 
-def _sanitize_keys(x):
-    """Recursively converts all dictionary keys to strings to avoid JAX sorting errors.
-    Only targets literal container types to avoid walking into arrays/variables.
-    """
-    if isinstance(x, (dict, nnx.State)):
-        return {str(k): _sanitize_keys(v) for k, v in x.items()}
-    if isinstance(x, (list, tuple)):
-        return type(x)(_sanitize_keys(v) for v in x)
-    return x
-
-
 def restore_model_from_path(
     path: str,
     model: Dreamer4TokenizerMAE,
@@ -308,15 +295,15 @@ def restore_model_from_path(
         try:
             restored_state = _robust_restore(cand, current_state)
             
-            # If the restored state is too large (composite), try to drill down
+            # Unpack if nested
             if isinstance(restored_state, dict):
                 if "model_state" in restored_state:
-                    restored_state = restored_state["model"]
+                    restored_state = restored_state["model_state"]
                 if isinstance(restored_state, dict) and "model" in restored_state:
                     restored_state = restored_state["model"]
             
-            # Use partial update to avoid "extra key" errors if restored_state still has old keys
-            # or if it's a raw dict from Strategy 3.
+            # Use partial update to avoid "extra key" errors if restored_state has
+            # extra fields.
             nnx.update(model, restored_state)
             print(f"Successfully restored from {cand}")
             return
@@ -380,9 +367,12 @@ def main(args: Args) -> None:
     # --- Mesh and Sharding ---
     _, replicated_sharding, videos_sharding = build_mesh_and_sharding(num_devices)
     
-    # We skip explicit model sharding constraints here to avoid JAX sorting errors
-    # and potential conflicts with NNX state keys. JAX will replicate the model
-    # automatically across devices as needed.
+    # NOTE: We skip explicitly applying sharding constraints to the model state here.
+    # Applying constraints caused complex issues with sorting mixed string/int keys
+    # or breaking nnx.Graph references when sanitized.
+    # JAX and NNX will handle the sharding/replication implicitly when the 
+    # model is passed to the mesh-aware JIT function or through data parallelism.
+
     # --- Dataloader ---
     val_iterator = build_dataloader(args, args.data_dir)
     dataloader_val = (
@@ -395,6 +385,8 @@ def main(args: Args) -> None:
     )
 
     # LPIPS evaluator
+    # NOTE: LPIPSEvaluator is not a standard JAX/NNX PyTree, so it acts as 
+    # a static configuration object.
     lpips_evaluator = lpips_jax.LPIPSEvaluator(replicate=False, net='alexnet')
 
     def tokenizer_loss_fn(
@@ -462,8 +454,6 @@ def main(args: Args) -> None:
     print(f"Starting validation for {args.val_steps} steps...")
     loss_per_step = []
     metrics_per_step = []
-    last_batch = None
-    last_recon = None
     
     for i, batch in enumerate(dataloader_val):
         if i >= args.val_steps:
@@ -480,6 +470,8 @@ def main(args: Args) -> None:
         if (i + 1) % 10 == 0:
             print(f"Validated {i + 1}/{args.val_steps} steps. Current MSE: {metrics['mse']:.6f}")
 
+        # --- Logging per step ---
+        if args.log and jax.process_index() == 0:
             gt_seq = batch["videos"][0].astype(jnp.float32) / 255.0
             recon_seq = recon[0].clip(0, 1)
             
