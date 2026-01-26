@@ -1,4 +1,5 @@
 import os
+import time
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.98")
 
@@ -586,6 +587,55 @@ def main(args: Args) -> None:
         # Do not skip the first batch during training
         dataloader_train = itertools.chain([first_batch], dataloader_train)
     print(f"Starting training from step {step}...")
+
+    if args.val_only:
+        rng, _rng_mask_val = jax.random.split(rng, 2)
+        val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(dataloader_val, optimizer.model,
+                                     lpips_evaluator, args.patch_size, _rng_mask_val)
+        print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
+        val_results = {
+            "metrics": val_metrics,
+            "gt_batch": val_gt_batch,
+            "recon": val_recon,
+        }
+
+        val_results["gt_seq_val"] = (
+            val_results["gt_batch"]["videos"][0].astype(jnp.float32)
+            / 255.0
+        )
+        val_results["recon_seq_val"] = val_results["recon"][0].clip(
+            0, 1
+        )
+        val_results["val_comparison_seq"] = jnp.concatenate(
+            (val_results["gt_seq_val"], val_results["recon_seq_val"]),
+            axis=1,
+        )
+        val_results["val_comparison_seq"] = einops.rearrange(
+            val_results["val_comparison_seq"] * 255,
+            "t h w c -> h (t w) c",
+        )
+
+        log_images =  dict(
+            val_image=wandb.Image(
+                np.asarray(val_results["gt_seq_val"][0])
+            ),
+            val_recon=wandb.Image(
+                np.asarray(val_results["recon_seq_val"][0])
+            ),
+            val_true_vs_recon=wandb.Image(
+                np.asarray(
+                    val_results["val_comparison_seq"].astype(
+                        np.uint8
+                    )
+                )
+            ),
+        )
+
+        wandb.log(log_images)
+        
+        time.sleep(10)
+        return
+    
     first_step = step
     while step < args.num_steps:
         for batch in dataloader_train:
