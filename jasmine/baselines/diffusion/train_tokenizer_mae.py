@@ -354,8 +354,6 @@ def restore_checkpoint_if_needed(
             restored_optimizer_state = restored["model_state"]
             nnx.update(optimizer, restored_optimizer_state)
             train_iterator = restored["train_dataloader_state"]
-            if val_iterator:
-                val_iterator = restored["val_dataloader_state"]
         step = restore_step or 0
         print(f"Restored dataloader and model state from step {step}")
     return step, optimizer, train_iterator, val_iterator
