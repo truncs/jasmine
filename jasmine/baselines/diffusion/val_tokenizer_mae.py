@@ -463,8 +463,9 @@ def main(args: Args) -> None:
         loss_per_step.append(loss)
         metrics_per_step.append(metrics)
         
-        # --- Logging per step ---
-        if args.log and jax.process_index() == 0:
+        if (i + 1) % 10 == 0:
+            print(f"Validated {i + 1}/{args.val_steps} steps. Current MSE: {metrics['mse']:.6f}")
+
             gt_seq = batch["videos"][0].astype(jnp.float32) / 255.0
             recon_seq = recon[0].clip(0, 1)
             
@@ -482,9 +483,6 @@ def main(args: Args) -> None:
                 ),
             ))
             wandb.log(step_metrics, step=i)
-        
-        if (i + 1) % 10 == 0:
-            print(f"Validated {i + 1}/{args.val_steps} steps. Current MSE: {metrics['mse']:.6f}")
 
     # Aggregated metrics
     if not metrics_per_step:
