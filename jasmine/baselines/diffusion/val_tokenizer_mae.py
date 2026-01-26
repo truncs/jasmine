@@ -217,15 +217,13 @@ def restore_model_state(
         print("No checkpoint found.")
         return 0
 
-    abstract_model = nnx.eval_shape(lambda: model)
-    abstract_model_state = nnx.state(abstract_model)
+    # Get the current model state to use as a template for partial restore.
+    # This ensures that any weights missing from the checkpoint remain 
+    # as their current real arrays instead of becoming ShapeDtypeStructs.
+    model_state = nnx.state(model)
     
-    # Check if the checkpoint was saved as part of an optimizer state
-    # or just the model state.
-    # Note: We use partial_restore=True because the model might have been
-    # refactored (e.g. MovingRMS removed).
     restore_args = ocp.args.Composite(
-        model_state=ocp.args.PyTreeRestore(abstract_model_state, partial_restore=True),
+        model_state=ocp.args.PyTreeRestore(model_state, partial_restore=True),
     )
     
     restored = checkpoint_manager.restore(restore_step, args=restore_args)
@@ -364,7 +362,7 @@ def main(args: Args) -> None:
 
         return loss, (recon, metrics)
 
-    @nnx.jit(static_argnums=(1, 2,))
+    @nnx.jit(static_argnums=(2,))
     def val_step(
         model: Dreamer4TokenizerMAE, lpips_evaluator, patch_size: int, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
