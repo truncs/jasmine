@@ -344,16 +344,9 @@ def restore_checkpoint_if_needed(
         assert checkpoint_manager is not None
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
-        if val_iterator:
-            restore_args = ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
-                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
-                val_dataloader_state=grain.checkpoint.CheckpointRestore(val_iterator),  # type: ignore
-            )
-        else:
-            restore_args = ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
-                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+        restore_args = ocp.args.Composite(
+            model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
+            train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
             )
         if restore_step:
             restored = checkpoint_manager.restore(
@@ -594,7 +587,7 @@ def main(args: Args) -> None:
 
     if args.val_only:
         rng, _rng_mask_val = jax.random.split(rng, 2)
-        val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(dataloader_train, optimizer.model,
+        val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(dataloader_val, optimizer.model,
                                      lpips_evaluator, args.patch_size, _rng_mask_val)
         print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
         val_results = {
