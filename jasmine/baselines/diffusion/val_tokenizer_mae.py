@@ -273,9 +273,13 @@ def restore_model_state(
 
 
 def _sanitize_keys(x):
-    """Recursively converts all dictionary keys to strings to avoid JAX sorting errors."""
-    if hasattr(x, "items") and callable(getattr(x, "items")):
+    """Recursively converts all dictionary keys to strings to avoid JAX sorting errors.
+    Only targets literal container types to avoid walking into arrays/variables.
+    """
+    if isinstance(x, dict):
         return {str(k): _sanitize_keys(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return type(x)(_sanitize_keys(v) for v in x)
     return x
 
 
@@ -311,11 +315,10 @@ def restore_model_from_path(
                 if isinstance(restored_state, dict) and "model" in restored_state:
                     restored_state = restored_state["model"]
             
-            # Sanitize keys: convert all keys to strings. 
+            # Sanitize keys: convert all keys to strings to fix JAX sorting errors
             restored_state = _sanitize_keys(restored_state)
             
-            # Use partial update to avoid "extra key" errors if restored_state still has old keys
-            # or if it's a raw dict from Strategy 3.
+            # Use partial update to avoid "extra key" errors
             nnx.update(model, restored_state)
             print(f"Successfully restored from {cand}")
             return
@@ -323,9 +326,11 @@ def restore_model_from_path(
             last_err = e
             print(f"Candidate {cand} failed: {e}")
             
-    print(f"Failed to restore model from any candidate path. Last error: {last_err}")
-    # Force failure if we couldn't restore, as random init during val is usually a mistake
-    raise RuntimeError(f"Restoration failed for {path}") from last_err
+    print(f"Failed to restore model from any candidate path.")
+    if last_err:
+        print(f"Last error: {last_err}")
+    # Force failure if we couldn't restore
+    raise RuntimeError(f"Restoration failed for {path}")
 
 
 def main(args: Args) -> None:
@@ -372,20 +377,18 @@ def main(args: Args) -> None:
         checkpoint_manager = build_checkpoint_manager(args)
         restore_model_state(args, checkpoint_manager, model)
     else:
-        print("No checkpoint provided. Running with random initialization.")
+        print("No checkpoint directory provided. Running with random initialization.")
 
     # --- Mesh and Sharding ---
     _, replicated_sharding, videos_sharding = build_mesh_and_sharding(num_devices)
     
     # Shard model params
-    # NOTE: We sanitize keys here too, right before passing to jax.lax.with_sharding_constraint
-    # to ensure NO mixed string/int keys exist in the pytree.
-    model_state = nnx.state(model)
-    model_state = _sanitize_keys(model_state)
+    # NOTE: We sanitize keys here to ensure NO mixed string/int keys exist in the pytree,
+    # which causes JAX sharding/flattening to fail.
+    model_state = _sanitize_keys(nnx.state(model))
     
     sharded_model_state = jax.lax.with_sharding_constraint(model_state, replicated_sharding)
     nnx.update(model, sharded_model_state)
-
     # --- Dataloader ---
     val_iterator = build_dataloader(args, args.data_dir)
     dataloader_val = (
