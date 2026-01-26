@@ -276,7 +276,7 @@ def _sanitize_keys(x):
     """Recursively converts all dictionary keys to strings to avoid JAX sorting errors.
     Only targets literal container types to avoid walking into arrays/variables.
     """
-    if isinstance(x, dict):
+    if isinstance(x, (dict, nnx.State)):
         return {str(k): _sanitize_keys(v) for k, v in x.items()}
     if isinstance(x, (list, tuple)):
         return type(x)(_sanitize_keys(v) for v in x)
