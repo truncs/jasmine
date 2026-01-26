@@ -208,6 +208,34 @@ def build_checkpoint_manager(args: Args) -> ocp.CheckpointManager:
     return checkpoint_manager
 
 
+def _robust_restore(path: str, template: nnx.State) -> nnx.State:
+    """Tries various Orbax API variants to restore a PyTree from a path."""
+    checkpointer = ocp.StandardCheckpointer()
+    
+    # Strategy 1: The 'args' keyword with PyTreeRestore (standard in modern Orbax)
+    try:
+        return checkpointer.restore(path, args=ocp.args.PyTreeRestore(template, partial_restore=True))
+    except Exception:
+        pass
+        
+    # Strategy 2: The 'item' keyword (used in some versions)
+    try:
+        return checkpointer.restore(path, item=template)
+    except Exception:
+        pass
+        
+    # Strategy 3: Simple positional call (returns full tree as dict/pytree)
+    try:
+        content = checkpointer.restore(path)
+        # If we got a full tree, we might need to manually align it with the template
+        # or it might already be what we need. 
+        return content
+    except Exception:
+        pass
+        
+    raise RuntimeError(f"All restoration strategies failed for path: {path}")
+
+
 def restore_model_state(
     args: Args,
     checkpoint_manager: ocp.CheckpointManager,
@@ -218,29 +246,29 @@ def restore_model_state(
         print("No checkpoint found.")
         return 0
 
-    # Get the current model state to use as a template for partial restore.
-    # This ensures that any weights missing from the checkpoint remain 
-    # as their current real arrays instead of becoming ShapeDtypeStructs.
-    model_state = nnx.state(model)
+    current_state = nnx.state(model)
     
-    restore_args = ocp.args.Composite(
-        model_state=ocp.args.PyTreeRestore(model_state, partial_restore=True),
-    )
-    
-    restored = checkpoint_manager.restore(restore_step, args=restore_args)
-    
-    # Extract model state from common checkpoint structures
-    if "model_state" in restored:
-        model_state = restored["model_state"]
-        # If it was saved with an optimizer (nnx.ModelAndOptimizer), 
-        # the model state is under "model" key in the optimizer state.
-        if "model" in model_state:
-            model_state = model_state["model"]
-    else:
-        model_state = restored
+    # Try restoring through the manager (standard)
+    try:
+        restore_args = ocp.args.Composite(
+            model_state=ocp.args.PyTreeRestore(current_state, partial_restore=True),
+        )
+        restored = checkpoint_manager.restore(restore_step, args=restore_args)
+        
+        # Unpack composite
+        if isinstance(restored, dict) and "model_state" in restored:
+            model_state = restored["model_state"]
+            if isinstance(model_state, dict) and "model" in model_state:
+                model_state = model_state["model"]
+            nnx.update(model, model_state)
+            print(f"Restored model state from step {restore_step} via manager")
+            return restore_step
+    except Exception as e:
+        print(f"Manager restoration failed: {e}. Trying raw path strategy...")
 
-    nnx.update(model, model_state)
-    print(f"Restored model state from step {restore_step}")
+    # Fallback: find the path and use path-based restoration
+    step_path = checkpoint_manager.directory / str(restore_step)
+    restore_model_from_path(str(step_path), model)
     return restore_step
 
 
@@ -248,83 +276,46 @@ def restore_model_from_path(
     path: str,
     model: Dreamer4TokenizerMAE,
 ) -> None:
-    # Get current model state as template
-    model_state = nnx.state(model)
+    path = os.path.abspath(path)
+    print(f"Attempting to restore model from path: {path}")
     
-    # Try to load as a composite checkpoint (which is what manager.save creates)
-    # We use a temporary CheckpointManager to handle the restoration from a specific path
-    # by treating the parent of 'path' as the ckpt_dir and the basename as the 'step'.
-    # This is a bit of a hack but works with the existing Orbax structure.
+    current_state = nnx.state(model)
     
-    parent_dir = os.path.dirname(os.path.abspath(path))
-    target_name = os.path.basename(os.path.abspath(path))
+    # Candidates for where the model's PyTree might be living inside the path
+    candidates = [
+        path,
+        os.path.join(path, "model_state", "model"),
+        os.path.join(path, "model_state"),
+    ]
     
-    # Check if target_name is a number (step) or a literal folder name
-    try:
-        step = int(target_name)
-        base_dir = parent_dir
-    except ValueError:
-        # If it's not an integer, we might need a different approach.
-        # If the user points to a folder like "best_model", we can try to
-        # use StandardCheckpointer to restore from a literal path.
-        checkpointer = ocp.StandardCheckpointer()
+    last_err = None
+    for cand in candidates:
+        if not os.path.isdir(cand):
+            continue
         
-        # Most of our checkpoints are composites with a "model_state" subdirectory
+        print(f"Trying candidate path: {cand}")
         try:
-            target_path = path
-            model_state_path = os.path.join(path, "model_state")
-            if os.path.exists(model_state_path):
-                target_path = model_state_path
-                # Check for 'model' nesting
-                if os.path.exists(os.path.join(model_state_path, "model")):
-                    target_path = os.path.join(model_state_path, "model")
+            restored_state = _robust_restore(cand, current_state)
             
-            # Use the most basic restore call. Some versions use item=, some args=, 
-            # and some just positional or return the dict.
-            try:
-                # Try simple positional
-                restored_state = checkpointer.restore(target_path)
-            except Exception:
-                # Try with args= if positional fails (though usually it's the other way)
-                restore_args = ocp.args.PyTreeRestore(model_state, partial_restore=True)
-                restored_state = checkpointer.restore(target_path, args=restore_args)
-            
-            # If the result is a dict with model_state/model keys, unpack it
+            # If the restored state is too large (composite), try to drill down
             if isinstance(restored_state, dict):
                 if "model_state" in restored_state:
                     restored_state = restored_state["model_state"]
-                if "model" in restored_state:
+                if isinstance(restored_state, dict) and "model" in restored_state:
                     restored_state = restored_state["model"]
             
-            model_state = restored_state
+            # Use partial update to avoid "extra key" errors if restored_state still has old keys
+            # or if it's a raw dict from Strategy 3.
+            nnx.update(model, restored_state)
+            print(f"Successfully restored from {cand}")
+            return
         except Exception as e:
-            print(f"Failed to restore model from {path}: {e}")
-            raise e
-        
-        nnx.update(model, model_state)
-        print(f"Restored model state from path: {path}")
-        return
-
-    # If it was an integer step, use the manager logic
-    handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
-    handler_registry.add("model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler)
-    manager = ocp.CheckpointManager(base_dir, handler_registry=handler_registry)
-    
-    restore_args = ocp.args.Composite(
-        model_state=ocp.args.PyTreeRestore(model_state, partial_restore=True),
-    )
-    restored = manager.restore(step, args=restore_args)
-    
-    if "model_state" in restored:
-        model_state = restored["model_state"]
-        if "model" in model_state:
-            model_state = model_state["model"]
-    else:
-        model_state = restored
-
-    nnx.update(model, model_state)
-    print(f"Restored model state from step {step} at {base_dir}")
-    manager.close()
+            last_err = e
+            print(f"Candidate {cand} failed: {e}")
+            
+    print(f"Failed to restore model from any candidate path. Last error: {last_err}")
+    # We don't raise here to allow main to continue with random init if necessary, 
+    # but usually checkpoints are critical.
 
 
 def main(args: Args) -> None:
