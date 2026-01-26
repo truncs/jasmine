@@ -337,6 +337,7 @@ def restore_checkpoint_if_needed(
     step = 0
     if checkpoint_manager and restore_step is None:
         restore_step = checkpoint_manager.latest_step()
+        
     if args.restore_ckpt:
         assert checkpoint_manager is not None
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
@@ -591,7 +592,7 @@ def main(args: Args) -> None:
 
     if args.val_only:
         rng, _rng_mask_val = jax.random.split(rng, 2)
-        val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(dataloader_val, optimizer.model,
+        val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(dataloader_train, optimizer.model,
                                      lpips_evaluator, args.patch_size, _rng_mask_val)
         print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
         val_results = {
