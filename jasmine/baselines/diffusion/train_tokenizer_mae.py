@@ -47,6 +47,8 @@ class Args:
     data_dir: str = ""
     save_ckpt: bool = False
     restore_ckpt: bool = False
+    restore_step: Optional[int] = None
+    
     # Optimization
     batch_size: int = 48
     init_lr: float = 0.0
@@ -435,7 +437,7 @@ def main(args: Args) -> None:
 
     # --- Restore checkpoint ---
     step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
-        args, checkpoint_manager, optimizer, train_iterator, val_iterator
+        args, checkpoint_manager, optimizer, train_iterator, val_iterator, args.restore_step
     )
 
     # LPIPS evaluator
