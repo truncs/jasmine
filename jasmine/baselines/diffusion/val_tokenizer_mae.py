@@ -462,8 +462,26 @@ def main(args: Args) -> None:
         
         loss_per_step.append(loss)
         metrics_per_step.append(metrics)
-        last_batch = batch
-        last_recon = recon
+        
+        # --- Logging per step ---
+        if args.log and jax.process_index() == 0:
+            gt_seq = batch["videos"][0].astype(jnp.float32) / 255.0
+            recon_seq = recon[0].clip(0, 1)
+            
+            comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
+            comparison_seq = einops.rearrange(
+                comparison_seq * 255, "t h w c -> h (t w) c"
+            )
+            
+            step_metrics = {f"step_{k}": float(v) for k, v in metrics.items()}
+            step_metrics.update(dict(
+                val_image=wandb.Image(np.asarray(gt_seq[0])),
+                val_recon=wandb.Image(np.asarray(recon_seq[0])),
+                val_true_vs_recon=wandb.Image(
+                    np.asarray(comparison_seq.astype(np.uint8))
+                ),
+            ))
+            wandb.log(step_metrics, step=i)
         
         if (i + 1) % 10 == 0:
             print(f"Validated {i + 1}/{args.val_steps} steps. Current MSE: {metrics['mse']:.6f}")
@@ -483,26 +501,9 @@ def main(args: Args) -> None:
     for k, v in val_metrics.items():
         print(f"{k}: {v:.6f}")
 
-    # --- Logging Images ---
-    if args.log and jax.process_index() == 0 and last_batch is not None:
+    # --- Final Logging ---
+    if args.log and jax.process_index() == 0:
         wandb.log(val_metrics)
-        
-        gt_seq = last_batch["videos"][0].astype(jnp.float32) / 255.0
-        recon_seq = last_recon[0].clip(0, 1)
-        
-        comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
-        comparison_seq = einops.rearrange(
-            comparison_seq * 255, "t h w c -> h (t w) c"
-        )
-        
-        log_images = dict(
-            val_image=wandb.Image(np.asarray(gt_seq[0])),
-            val_recon=wandb.Image(np.asarray(recon_seq[0])),
-            val_true_vs_recon=wandb.Image(
-                np.asarray(comparison_seq.astype(np.uint8))
-            ),
-        )
-        wandb.log(log_images)
         wandb.finish()
 
     if 'checkpoint_manager' in locals():
