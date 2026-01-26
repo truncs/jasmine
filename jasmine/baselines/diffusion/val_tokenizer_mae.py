@@ -274,7 +274,7 @@ def restore_model_state(
 
 def _sanitize_keys(x):
     """Recursively converts all dictionary keys to strings to avoid JAX sorting errors."""
-    if isinstance(x, dict):
+    if hasattr(x, "items") and callable(getattr(x, "items")):
         return {str(k): _sanitize_keys(v) for k, v in x.items()}
     return x
 
@@ -312,8 +312,6 @@ def restore_model_from_path(
                     restored_state = restored_state["model"]
             
             # Sanitize keys: convert all keys to strings. 
-            # This fixes "ValueError: Comparator raised exception while sorting pytree dictionary keys"
-            # which happens when a dict has mixed string and integer keys.
             restored_state = _sanitize_keys(restored_state)
             
             # Use partial update to avoid "extra key" errors if restored_state still has old keys
@@ -326,8 +324,8 @@ def restore_model_from_path(
             print(f"Candidate {cand} failed: {e}")
             
     print(f"Failed to restore model from any candidate path. Last error: {last_err}")
-    # We don't raise here to allow main to continue with random init if necessary, 
-    # but usually checkpoints are critical.
+    # Force failure if we couldn't restore, as random init during val is usually a mistake
+    raise RuntimeError(f"Restoration failed for {path}") from last_err
 
 
 def main(args: Args) -> None:
@@ -380,7 +378,11 @@ def main(args: Args) -> None:
     _, replicated_sharding, videos_sharding = build_mesh_and_sharding(num_devices)
     
     # Shard model params
+    # NOTE: We sanitize keys here too, right before passing to jax.lax.with_sharding_constraint
+    # to ensure NO mixed string/int keys exist in the pytree.
     model_state = nnx.state(model)
+    model_state = _sanitize_keys(model_state)
+    
     sharded_model_state = jax.lax.with_sharding_constraint(model_state, replicated_sharding)
     nnx.update(model, sharded_model_state)
 
