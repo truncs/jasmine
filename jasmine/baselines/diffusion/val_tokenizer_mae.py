@@ -436,7 +436,7 @@ def main(args: Args) -> None:
 
         return loss, (recon, metrics)
 
-    @nnx.jit(static_argnums=(2,))
+    @nnx.jit(static_argnums=(1, 2,))
     def val_step(
         model: Dreamer4TokenizerMAE, lpips_evaluator, patch_size: int, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
