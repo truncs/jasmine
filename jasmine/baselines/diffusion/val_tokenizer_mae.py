@@ -311,14 +311,12 @@ def restore_model_from_path(
             # If the restored state is too large (composite), try to drill down
             if isinstance(restored_state, dict):
                 if "model_state" in restored_state:
-                    restored_state = restored_state["model_state"]
+                    restored_state = restored_state["model"]
                 if isinstance(restored_state, dict) and "model" in restored_state:
                     restored_state = restored_state["model"]
             
-            # Sanitize keys: convert all keys to strings to fix JAX sorting errors
-            restored_state = _sanitize_keys(restored_state)
-            
-            # Use partial update to avoid "extra key" errors
+            # Use partial update to avoid "extra key" errors if restored_state still has old keys
+            # or if it's a raw dict from Strategy 3.
             nnx.update(model, restored_state)
             print(f"Successfully restored from {cand}")
             return
@@ -377,18 +375,14 @@ def main(args: Args) -> None:
         checkpoint_manager = build_checkpoint_manager(args)
         restore_model_state(args, checkpoint_manager, model)
     else:
-        print("No checkpoint directory provided. Running with random initialization.")
+        print("No checkpoint provided. Running with random initialization.")
 
     # --- Mesh and Sharding ---
     _, replicated_sharding, videos_sharding = build_mesh_and_sharding(num_devices)
     
-    # Shard model params
-    # NOTE: We sanitize keys here to ensure NO mixed string/int keys exist in the pytree,
-    # which causes JAX sharding/flattening to fail.
-    model_state = _sanitize_keys(nnx.state(model))
-    
-    sharded_model_state = jax.lax.with_sharding_constraint(model_state, replicated_sharding)
-    nnx.update(model, sharded_model_state)
+    # We skip explicit model sharding constraints here to avoid JAX sorting errors
+    # and potential conflicts with NNX state keys. JAX will replicate the model
+    # automatically across devices as needed.
     # --- Dataloader ---
     val_iterator = build_dataloader(args, args.data_dir)
     dataloader_val = (
