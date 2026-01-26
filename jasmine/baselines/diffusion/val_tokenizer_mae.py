@@ -208,30 +208,56 @@ def build_checkpoint_manager(args: Args) -> ocp.CheckpointManager:
     return checkpoint_manager
 
 
+def _validate_state_leaves(restored, template):
+    """
+    Recursively validates that the restored state structure matches the template structure
+    at the leaf level (i.e., if template has an array, restored should not be a dict).
+    """
+    if isinstance(template, (dict, nnx.State)):
+        if not isinstance(restored, (dict, nnx.State)):
+            return False # Structure mismatch
+        for k, v_template in template.items():
+            # If partial_restore=False, we would enforce k in restored.
+            # With partial_restore, we only check if k exists in restored.
+            if k in restored:
+                if not _validate_state_leaves(restored[k], v_template):
+                    return False
+        return True
+    elif hasattr(template, "shape") or isinstance(template, (jax.Array, np.ndarray, int, float)):
+        # Leaf node in template. Restored should definitely NOT be a dict.
+        if isinstance(restored, dict):
+            return False
+    return True
+
+
 def _robust_restore(path: str, template: nnx.State) -> nnx.State:
     """Tries various Orbax API variants to restore a PyTree from a path."""
     checkpointer = ocp.StandardCheckpointer()
     
-    # Strategy 1: The 'args' keyword with PyTreeRestore (standard in modern Orbax)
-    try:
-        return checkpointer.restore(path, args=ocp.args.PyTreeRestore(template, partial_restore=True))
-    except Exception:
-        pass
+    # Helper to try a strategy and validate result
+    def try_strategy(func):
+        try:
+            res = func()
+            if _validate_state_leaves(res, template):
+                return res
+        except Exception:
+            pass
+        return None
+
+    # Strategy 1: The 'args' keyword with PyTreeRestore
+    res = try_strategy(lambda: checkpointer.restore(path, args=ocp.args.PyTreeRestore(template, partial_restore=True)))
+    if res is not None: return res
         
-    # Strategy 2: The 'item' keyword (used in some versions)
-    try:
-        return checkpointer.restore(path, item=template)
-    except Exception:
-        pass
+    # Strategy 2: The 'item' keyword
+    res = try_strategy(lambda: checkpointer.restore(path, item=template))
+    if res is not None: return res
         
-    # Strategy 3: Simple positional call (returns full tree as dict/pytree)
-    try:
-        content = checkpointer.restore(path)
-        return content
-    except Exception:
-        pass
+    # Strategy 3: Simple positional call
+    # This often returns everything as a dict. If it matches structure, great.
+    res = try_strategy(lambda: checkpointer.restore(path))
+    if res is not None: return res
         
-    raise RuntimeError(f"All restoration strategies failed for path: {path}")
+    raise RuntimeError(f"All restoration strategies failed (or returned invalid structures) for path: {path}")
 
 
 def restore_model_state(
