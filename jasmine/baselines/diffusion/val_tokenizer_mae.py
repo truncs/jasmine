@@ -265,23 +265,38 @@ def restore_model_from_path(
         base_dir = parent_dir
     except ValueError:
         # If it's not an integer, we might need a different approach.
-        # However, Orbax CheckpointManager usually expects integer steps.
         # If the user points to a folder like "best_model", we can try to
         # use StandardCheckpointer to restore from a literal path.
         checkpointer = ocp.StandardCheckpointer()
         
         # Most of our checkpoints are composites with a "model_state" subdirectory
         try:
+            target_path = path
             model_state_path = os.path.join(path, "model_state")
             if os.path.exists(model_state_path):
-                # Check for 'model' nesting (common when saved from ModelAndOptimizer)
+                target_path = model_state_path
+                # Check for 'model' nesting
                 if os.path.exists(os.path.join(model_state_path, "model")):
-                    model_state = checkpointer.restore(os.path.join(model_state_path, "model"), item=model_state)
-                else:
-                    model_state = checkpointer.restore(model_state_path, item=model_state)
-            else:
-                # Direct PyTree
-                model_state = checkpointer.restore(path, item=model_state)
+                    target_path = os.path.join(model_state_path, "model")
+            
+            # Use the most basic restore call. Some versions use item=, some args=, 
+            # and some just positional or return the dict.
+            try:
+                # Try simple positional
+                restored_state = checkpointer.restore(target_path)
+            except Exception:
+                # Try with args= if positional fails (though usually it's the other way)
+                restore_args = ocp.args.PyTreeRestore(model_state, partial_restore=True)
+                restored_state = checkpointer.restore(target_path, args=restore_args)
+            
+            # If the result is a dict with model_state/model keys, unpack it
+            if isinstance(restored_state, dict):
+                if "model_state" in restored_state:
+                    restored_state = restored_state["model_state"]
+                if "model" in restored_state:
+                    restored_state = restored_state["model"]
+            
+            model_state = restored_state
         except Exception as e:
             print(f"Failed to restore model from {path}: {e}")
             raise e
