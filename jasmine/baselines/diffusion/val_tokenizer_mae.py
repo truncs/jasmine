@@ -270,24 +270,21 @@ def restore_model_from_path(
         # use StandardCheckpointer to restore from a literal path.
         checkpointer = ocp.StandardCheckpointer()
         
-        # We need to know if it's a composite or a direct PyTree
-        # Most of our checkpoints are composites with "model_state"
+        # Most of our checkpoints are composites with a "model_state" subdirectory
         try:
-            # Try composite restore
-            restore_args = ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(model_state, partial_restore=True),
-            )
-            restored = checkpointer.restore(path, args=restore_args)
-            if "model_state" in restored:
-                model_state = restored["model_state"]
-                if "model" in model_state:
-                    model_state = model_state["model"]
+            model_state_path = os.path.join(path, "model_state")
+            if os.path.exists(model_state_path):
+                # Check for 'model' nesting (common when saved from ModelAndOptimizer)
+                if os.path.exists(os.path.join(model_state_path, "model")):
+                    model_state = checkpointer.restore(os.path.join(model_state_path, "model"), item=model_state)
+                else:
+                    model_state = checkpointer.restore(model_state_path, item=model_state)
             else:
-                model_state = restored
-        except Exception:
-            # Fallback to direct PyTree restore
-            restore_args = ocp.args.PyTreeRestore(model_state, partial_restore=True)
-            model_state = checkpointer.restore(path, args=restore_args)
+                # Direct PyTree
+                model_state = checkpointer.restore(path, item=model_state)
+        except Exception as e:
+            print(f"Failed to restore model from {path}: {e}")
+            raise e
         
         nnx.update(model, model_state)
         print(f"Restored model state from path: {path}")
