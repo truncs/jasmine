@@ -65,6 +65,7 @@ class Args:
     name: str = "val_tokenizer_mae"
     tags: list[str] = field(default_factory=lambda: ["tokenizer", "mae", "val"])
     ckpt_dir: str = ""
+    ckpt_path: Optional[str] = None
     restore_step: Optional[int] = None
     num_workers: int = 8
     prefetch_buffer_size: int = 1
@@ -243,6 +244,77 @@ def restore_model_state(
     return restore_step
 
 
+def restore_model_from_path(
+    path: str,
+    model: Dreamer4TokenizerMAE,
+) -> None:
+    # Get current model state as template
+    model_state = nnx.state(model)
+    
+    # Try to load as a composite checkpoint (which is what manager.save creates)
+    # We use a temporary CheckpointManager to handle the restoration from a specific path
+    # by treating the parent of 'path' as the ckpt_dir and the basename as the 'step'.
+    # This is a bit of a hack but works with the existing Orbax structure.
+    
+    parent_dir = os.path.dirname(os.path.abspath(path))
+    target_name = os.path.basename(os.path.abspath(path))
+    
+    # Check if target_name is a number (step) or a literal folder name
+    try:
+        step = int(target_name)
+        base_dir = parent_dir
+    except ValueError:
+        # If it's not an integer, we might need a different approach.
+        # However, Orbax CheckpointManager usually expects integer steps.
+        # If the user points to a folder like "best_model", we can try to
+        # use StandardCheckpointer to restore from a literal path.
+        checkpointer = ocp.StandardCheckpointer()
+        
+        # We need to know if it's a composite or a direct PyTree
+        # Most of our checkpoints are composites with "model_state"
+        try:
+            # Try composite restore
+            restore_args = ocp.args.Composite(
+                model_state=ocp.args.PyTreeRestore(model_state, partial_restore=True),
+            )
+            restored = checkpointer.restore(path, args=restore_args)
+            if "model_state" in restored:
+                model_state = restored["model_state"]
+                if "model" in model_state:
+                    model_state = model_state["model"]
+            else:
+                model_state = restored
+        except Exception:
+            # Fallback to direct PyTree restore
+            restore_args = ocp.args.PyTreeRestore(model_state, partial_restore=True)
+            model_state = checkpointer.restore(path, args=restore_args)
+        
+        nnx.update(model, model_state)
+        print(f"Restored model state from path: {path}")
+        return
+
+    # If it was an integer step, use the manager logic
+    handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
+    handler_registry.add("model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler)
+    manager = ocp.CheckpointManager(base_dir, handler_registry=handler_registry)
+    
+    restore_args = ocp.args.Composite(
+        model_state=ocp.args.PyTreeRestore(model_state, partial_restore=True),
+    )
+    restored = manager.restore(step, args=restore_args)
+    
+    if "model_state" in restored:
+        model_state = restored["model_state"]
+        if "model" in model_state:
+            model_state = model_state["model"]
+    else:
+        model_state = restored
+
+    nnx.update(model, model_state)
+    print(f"Restored model state from step {step} at {base_dir}")
+    manager.close()
+
+
 def main(args: Args) -> None:
     # Initialize JAX distributed if needed
     try:
@@ -281,11 +353,13 @@ def main(args: Args) -> None:
     print(param_counts)
 
     # --- Restore checkpoint ---
-    if args.ckpt_dir:
+    if args.ckpt_path:
+        restore_model_from_path(args.ckpt_path, model)
+    elif args.ckpt_dir:
         checkpoint_manager = build_checkpoint_manager(args)
         restore_model_state(args, checkpoint_manager, model)
     else:
-        print("No checkpoint directory provided. Running with random initialization.")
+        print("No checkpoint provided. Running with random initialization.")
 
     # --- Mesh and Sharding ---
     _, replicated_sharding, videos_sharding = build_mesh_and_sharding(num_devices)
