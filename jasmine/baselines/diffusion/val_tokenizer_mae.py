@@ -272,6 +272,13 @@ def restore_model_state(
     return restore_step
 
 
+def _sanitize_keys(x):
+    """Recursively converts all dictionary keys to strings to avoid JAX sorting errors."""
+    if isinstance(x, dict):
+        return {str(k): _sanitize_keys(v) for k, v in x.items()}
+    return x
+
+
 def restore_model_from_path(
     path: str,
     model: Dreamer4TokenizerMAE,
@@ -303,6 +310,11 @@ def restore_model_from_path(
                     restored_state = restored_state["model_state"]
                 if isinstance(restored_state, dict) and "model" in restored_state:
                     restored_state = restored_state["model"]
+            
+            # Sanitize keys: convert all keys to strings. 
+            # This fixes "ValueError: Comparator raised exception while sorting pytree dictionary keys"
+            # which happens when a dict has mixed string and integer keys.
+            restored_state = _sanitize_keys(restored_state)
             
             # Use partial update to avoid "extra key" errors if restored_state still has old keys
             # or if it's a raw dict from Strategy 3.
