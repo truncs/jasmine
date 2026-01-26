@@ -85,6 +85,7 @@ class Args:
     val_data_dir: str = ""
     val_interval: int = 20_000
     val_steps: int = 50
+    val_only: bool = False
     wandb_id: str = ""
     num_workers: int = 8
     prefetch_buffer_size: int = 1
