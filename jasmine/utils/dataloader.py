@@ -1,7 +1,7 @@
 import jax
 import numpy as np
 import grain
-from typing import Any
+from typing import Any, Optional
 import pickle
 
 
@@ -112,6 +112,7 @@ def get_dataloader(
     num_workers: int = 1,
     prefetch_buffer_size: int = 1,
     seed: int = 42,
+    num_epochs: Optional[int] = None,
 ):
     """
     Creates a data loading pipeline using Grain.
@@ -134,7 +135,7 @@ def get_dataloader(
         num_records=len(source),
         shard_options=grain.sharding.ShardByJaxProcess(drop_remainder=True),
         shuffle=True,
-        num_epochs=None,
+        num_epochs=num_epochs,
         seed=seed,
     )
 

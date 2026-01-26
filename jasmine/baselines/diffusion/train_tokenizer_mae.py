@@ -254,7 +254,7 @@ def shard_optimizer_states(
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
+def build_dataloader(args: Args, data_dir: str, num_epochs: Optional[int] = None) -> grain.DataLoaderIterator:
     image_shape = (args.image_height, args.image_width, args.image_channels)
     array_record_files = [
         os.path.join(data_dir, x)
@@ -271,6 +271,7 @@ def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
         num_workers=args.num_workers,
         prefetch_buffer_size=args.prefetch_buffer_size,
         seed=args.seed,
+        num_epochs=num_epochs,
     )
     return grain_dataloader
 
@@ -424,7 +425,8 @@ def main(args: Args) -> None:
     train_iterator = build_dataloader(args, args.data_dir)
     val_iterator = None
     if args.val_data_dir:
-        val_iterator = build_dataloader(args, args.val_data_dir)
+        num_epochs = 1 if args.val_only else None
+        val_iterator = build_dataloader(args, args.val_data_dir, num_epochs)
 
     # --- Restore checkpoint ---
     step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
@@ -584,49 +586,57 @@ def main(args: Args) -> None:
     print(f"Starting training from step {step}...")
 
     if args.val_only:
-        rng, _rng_mask_val = jax.random.split(rng, 2)
-        val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(dataloader_val, optimizer.model,
-                                     lpips_evaluator, args.patch_size, _rng_mask_val)
-        print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
-        val_results = {
-            "metrics": val_metrics,
-            "gt_batch": val_gt_batch,
-            "recon": val_recon,
-        }
 
-        val_results["gt_seq_val"] = (
-            val_results["gt_batch"]["videos"][0].astype(jnp.float32)
-            / 255.0
-        )
-        val_results["recon_seq_val"] = val_results["recon"][0].clip(
-            0, 1
-        )
-        val_results["val_comparison_seq"] = jnp.concatenate(
-            (val_results["gt_seq_val"], val_results["recon_seq_val"]),
-            axis=1,
-        )
-        val_results["val_comparison_seq"] = einops.rearrange(
-            val_results["val_comparison_seq"] * 255,
-            "t h w c -> h (t w) c",
-        )
+        step = 0
 
-        log_images =  dict(
-            val_image=wandb.Image(
-                np.asarray(val_results["gt_seq_val"][0])
-            ),
-            val_recon=wandb.Image(
-                np.asarray(val_results["recon_seq_val"][0])
-            ),
-            val_true_vs_recon=wandb.Image(
-                np.asarray(
-                    val_results["val_comparison_seq"].astype(
-                        np.uint8
-                    )
+        for batch in dataloader_val:
+            rng, _rng_mask = jax.random.split(rng, 2)
+            batch["rng"] = _rng_mask
+            loss, recon, val_metrics = val_step(tokenizer, lpips_evaluator, patch_size, batch)
+
+            if step % args.val_interval == 0:
+                print(f"Step {step}, validation loss: {loss}")
+                val_results = {
+                    "metrics": val_metrics,
+                    "gt_batch": val_gt_batch,
+                    "recon": val_recon,
+                }
+
+                val_results["gt_seq_val"] = (
+                    val_results["gt_batch"]["videos"][0].astype(jnp.float32)
+                    / 255.0
                 )
-            ),
-        )
+                val_results["recon_seq_val"] = val_results["recon"][0].clip(
+                    0, 1
+                )
+                val_results["val_comparison_seq"] = jnp.concatenate(
+                    (val_results["gt_seq_val"], val_results["recon_seq_val"]),
+                    axis=1,
+                )
+                val_results["val_comparison_seq"] = einops.rearrange(
+                    val_results["val_comparison_seq"] * 255,
+                    "t h w c -> h (t w) c",
+                )
 
-        wandb.log(log_images)
+                log_images =  dict(
+                    val_image=wandb.Image(
+                        np.asarray(val_results["gt_seq_val"][0])
+                    ),
+                    val_recon=wandb.Image(
+                        np.asarray(val_results["recon_seq_val"][0])
+                    ),
+                    val_true_vs_recon=wandb.Image(
+                        np.asarray(
+                            val_results["val_comparison_seq"].astype(
+                                np.uint8
+                            )
+                        )
+                    ),
+                )
+
+                
+                wandb.log(log_images)
+                wandb.log(val_metrics)
         
         time.sleep(10)
         return
