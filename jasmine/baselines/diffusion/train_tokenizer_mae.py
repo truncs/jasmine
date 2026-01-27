@@ -599,8 +599,8 @@ def main(args: Args) -> None:
                 print(f"Step {step}, validation loss: {loss}")
                 val_results = {
                     "metrics": val_metrics,
-                    "gt_batch": val_gt_batch,
-                    "recon": val_recon,
+                    "gt_batch": batch,
+                    "recon": recon,
                 }
 
                 val_results["gt_seq_val"] = (
