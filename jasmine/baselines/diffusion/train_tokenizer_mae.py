@@ -637,7 +637,7 @@ def main(args: Args) -> None:
                 
                 wandb.log(log_images)
                 wandb.log(val_metrics)
-                step += 1
+            step += 1
         
         time.sleep(10)
         return
