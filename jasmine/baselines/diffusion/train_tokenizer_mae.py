@@ -295,24 +295,11 @@ def build_checkpoint_manager(args: Args) -> Optional[ocp.CheckpointManager]:
             grain.checkpoint.CheckpointRestore,
             cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
         )
-        if args.val_data_dir:
-            handler_registry.add(
-                "val_dataloader_state",
-                grain.checkpoint.CheckpointSave,
-                cast(
-                    ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler
-                ),
-            )
-            handler_registry.add(
-                "val_dataloader_state",
-                grain.checkpoint.CheckpointRestore,
-                cast(
-                    ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler
-                ),
-            )
         checkpoint_options = ocp.CheckpointManagerOptions(
             save_interval_steps=args.log_checkpoint_interval,
             max_to_keep=3,
+            best_fn=lambda m: m["val_psnr"] if "val_psnr" in m else m["psnr"],
+            best_mode="max",
             keep_period=args.log_checkpoint_keep_period,
             step_format_fixed_length=6,
             cleanup_tmp_directories=True,
@@ -732,24 +719,30 @@ def main(args: Args) -> None:
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
                 assert checkpoint_manager is not None
                 optimizer_state = nnx.state(optimizer)
-                if val_iterator:
-                    ckpt_manager_args = ocp.args.Composite(
-                        model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
-                        train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
-                            train_iterator  # type: ignore
-                        ),
-                        val_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
-                            val_iterator  # type: ignore
-                        ),
+                ckpt_manager_args = ocp.args.Composite(
+                    model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
+                    train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
+                        train_iterator  # type: ignore
+                    ),
+                )
+
+                if dataloader_val:
+                    print("Calculating validation metrics...")
+                    rng, _rng_mask_val = jax.random.split(rng, 2)
+                    val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(
+                        dataloader_val, optimizer.model, lpips_evaluator, args.patch_size, _rng_mask_val
                     )
-                else:
-                    ckpt_manager_args = ocp.args.Composite(
-                        model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
-                        train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
-                            train_iterator  # type: ignore
-                        ),
+                    val_results = {
+                        "metrics": val_metrics,
+                        "gt_batch": val_gt_batch,
+                        "recon": val_recon,
+                    }
+                  
+                checkpoint_manager.save(
+                        step,
+                        args=ckpt_manager_args,
+                        metrics=val_results.get("metrics") if val_results else metrics,
                     )
-                checkpoint_manager.save(step, args=ckpt_manager_args)
                 print(f"Saved checkpoint at step {step}")
             if step >= args.num_steps:
                 break
