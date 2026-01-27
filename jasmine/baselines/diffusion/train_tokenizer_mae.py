@@ -1,4 +1,5 @@
 import os
+import time
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.98")
 
@@ -46,6 +47,8 @@ class Args:
     data_dir: str = ""
     save_ckpt: bool = False
     restore_ckpt: bool = False
+    restore_step: Optional[int] = None
+    
     # Optimization
     batch_size: int = 48
     init_lr: float = 0.0
@@ -84,6 +87,7 @@ class Args:
     val_data_dir: str = ""
     val_interval: int = 20_000
     val_steps: int = 50
+    val_only: bool = False
     wandb_id: str = ""
     num_workers: int = 8
     prefetch_buffer_size: int = 1
@@ -250,7 +254,7 @@ def shard_optimizer_states(
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
+def build_dataloader(args: Args, data_dir: str, num_epochs: Optional[int] = None) -> grain.DataLoaderIterator:
     image_shape = (args.image_height, args.image_width, args.image_channels)
     array_record_files = [
         os.path.join(data_dir, x)
@@ -267,6 +271,7 @@ def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
         num_workers=args.num_workers,
         prefetch_buffer_size=args.prefetch_buffer_size,
         seed=args.seed,
+        num_epochs=num_epochs,
     )
     return grain_dataloader
 
@@ -335,20 +340,14 @@ def restore_checkpoint_if_needed(
     step = 0
     if checkpoint_manager and restore_step is None:
         restore_step = checkpoint_manager.latest_step()
+        
     if args.restore_ckpt:
         assert checkpoint_manager is not None
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
-        if val_iterator:
-            restore_args = ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
-                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
-                val_dataloader_state=grain.checkpoint.CheckpointRestore(val_iterator),  # type: ignore
-            )
-        else:
-            restore_args = ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
-                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+        restore_args = ocp.args.Composite(
+            model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
+            train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
             )
         if restore_step:
             restored = checkpoint_manager.restore(
@@ -356,8 +355,6 @@ def restore_checkpoint_if_needed(
             restored_optimizer_state = restored["model_state"]
             nnx.update(optimizer, restored_optimizer_state)
             train_iterator = restored["train_dataloader_state"]
-            if val_iterator:
-                val_iterator = restored["val_dataloader_state"]
         step = restore_step or 0
         print(f"Restored dataloader and model state from step {step}")
     return step, optimizer, train_iterator, val_iterator
@@ -428,11 +425,12 @@ def main(args: Args) -> None:
     train_iterator = build_dataloader(args, args.data_dir)
     val_iterator = None
     if args.val_data_dir:
-        val_iterator = build_dataloader(args, args.val_data_dir)
+        num_epochs = 2 if args.val_only else None
+        val_iterator = build_dataloader(args, args.val_data_dir, num_epochs)
 
     # --- Restore checkpoint ---
     step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
-        args, checkpoint_manager, optimizer, train_iterator, val_iterator
+        args, checkpoint_manager, optimizer, train_iterator, val_iterator, args.restore_step
     )
 
     # LPIPS evaluator
@@ -586,6 +584,64 @@ def main(args: Args) -> None:
         # Do not skip the first batch during training
         dataloader_train = itertools.chain([first_batch], dataloader_train)
     print(f"Starting training from step {step}...")
+
+    if args.val_only:
+
+        step = 0
+
+        for batch in dataloader_val:
+            rng, _rng_mask = jax.random.split(rng, 2)
+            batch["rng"] = _rng_mask
+            loss, recon, val_metrics = val_step(optimizer.model, lpips_evaluator,
+                                                args.patch_size, batch)
+
+            if step % args.val_interval == 0:
+                print(f"Step {step}, validation loss: {loss}")
+                val_results = {
+                    "metrics": val_metrics,
+                    "gt_batch": batch,
+                    "recon": recon,
+                }
+
+                val_results["gt_seq_val"] = (
+                    val_results["gt_batch"]["videos"][0].astype(jnp.float32)
+                    / 255.0
+                )
+                val_results["recon_seq_val"] = val_results["recon"][0].clip(
+                    0, 1
+                )
+                val_results["val_comparison_seq"] = jnp.concatenate(
+                    (val_results["gt_seq_val"], val_results["recon_seq_val"]),
+                    axis=1,
+                )
+                val_results["val_comparison_seq"] = einops.rearrange(
+                    val_results["val_comparison_seq"] * 255,
+                    "t h w c -> h (t w) c",
+                )
+
+                log_images =  dict(
+                    val_image=wandb.Image(
+                        np.asarray(val_results["gt_seq_val"][0])
+                    ),
+                    val_recon=wandb.Image(
+                        np.asarray(val_results["recon_seq_val"][0])
+                    ),
+                    val_true_vs_recon=wandb.Image(
+                        np.asarray(
+                            val_results["val_comparison_seq"].astype(
+                                np.uint8
+                            )
+                        )
+                    ),
+                )
+                
+                wandb.log(log_images)
+                wandb.log(val_metrics)
+            step += 1
+        
+        time.sleep(10)
+        return
+    
     first_step = step
     while step < args.num_steps:
         for batch in dataloader_train:
