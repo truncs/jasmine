@@ -425,7 +425,7 @@ def main(args: Args) -> None:
     train_iterator = build_dataloader(args, args.data_dir)
     val_iterator = None
     if args.val_data_dir:
-        num_epochs = 1 if args.val_only else None
+        num_epochs = 2 if args.val_only else None
         val_iterator = build_dataloader(args, args.val_data_dir, num_epochs)
 
     # --- Restore checkpoint ---
@@ -633,10 +633,10 @@ def main(args: Args) -> None:
                         )
                     ),
                 )
-
                 
                 wandb.log(log_images)
                 wandb.log(val_metrics)
+                step += 1
         
         time.sleep(10)
         return
