@@ -592,7 +592,8 @@ def main(args: Args) -> None:
         for batch in dataloader_val:
             rng, _rng_mask = jax.random.split(rng, 2)
             batch["rng"] = _rng_mask
-            loss, recon, val_metrics = val_step(tokenizer, lpips_evaluator, patch_size, batch)
+            loss, recon, val_metrics = val_step(optimizer.model, lpips_evaluator,
+                                                args.patch_size, batch)
 
             if step % args.val_interval == 0:
                 print(f"Step {step}, validation loss: {loss}")
