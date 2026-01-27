@@ -738,11 +738,15 @@ def main(args: Args) -> None:
                         "recon": val_recon,
                     }
                   
+                save_metrics = val_results.get("metrics") if val_results else metrics
+                save_metrics = jax.tree.map(
+                    lambda x: x.item() if hasattr(x, "item") else x, save_metrics
+                )
                 checkpoint_manager.save(
-                        step,
-                        args=ckpt_manager_args,
-                        metrics=val_results.get("metrics") if val_results else metrics,
-                    )
+                    step,
+                    args=ckpt_manager_args,
+                    metrics=save_metrics,
+                )
                 print(f"Saved checkpoint at step {step}")
             if step >= args.num_steps:
                 break
