@@ -717,14 +717,17 @@ class Decoder(nnx.Module):
         return pred_btnd
 
 class ActionEncoder(nnx.Module):
-    def __init__(self, d_model: int, n_keyboard: int = 5, *, rngs: nnx.Rngs):
+    def __init__(self, d_model: int, n_keyboard: int = 5, is_discrete: bool = True, *, rngs: nnx.Rngs):
         self.d_model = d_model
         self.n_keyboard = n_keyboard
         
         key = rngs.params()
         self.base_emb = nnx.Param(jax.random.normal(key, (d_model,)) * 0.02)
-        
-        self.emb_key = nnx.Embed(n_keyboard, d_model, rngs=rngs)
+
+        if is_discrete:
+            self.emb_key = nnx.Embed(n_keyboard, d_model, rngs=rngs)
+        else:
+            self.emb_key = nnx.Linear(n_keyboard, d_model, rngs=rngs)
 
     def __call__(
         self,
@@ -767,6 +770,7 @@ class Dynamics(nnx.Module):
         time_every: int = 4,
         space_mode: str = "wm_agent_isolated",
         use_flash_attention: bool = False,
+        is_action_discrete: bool = True,
         *,
         rngs: nnx.Rngs,
     ):
