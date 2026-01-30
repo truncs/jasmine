@@ -582,7 +582,7 @@ class GenieDiffusion(nnx.Module):
         dtype: jnp.dtype,
         use_flash_attention: bool,
         rngs: nnx.Rngs,
-        decode: bool,
+        batch_self: int,
         dropout: float = 0.0,
         diffusion_denoise_steps: int = 0,
     ):
@@ -682,8 +682,8 @@ class GenieDiffusion(nnx.Module):
     def __call__(
         self,
         batch: Dict[str, jax.Array],
-        step_idxs,
-        signal_idxs,
+        step_BT: jax.Array,
+        sigma_BT: jax.Array,
     ) -> Dict[str, jax.Array]:
         videos_BTHWC = batch["videos"]
         H, W = videos_BTHWC.shape[2:4]
@@ -695,18 +695,61 @@ class GenieDiffusion(nnx.Module):
         )
 
         rng, _rng = jax.random.split(batch["rng"])
+        batch['rng'] = _rng
         tokenizer_outputs = self.tokenizer.mask_and_encode(
             videos_BTHWC, rng, training=False
         )
         token_latents_BTNL = tokenizer_outputs["z"]
         token_latents_BTNL = jax.lax.stop_gradient(token_latents_BTNL)
+
+        rng, _rng = jax.random.split(batch["rng"])
+        zbar_BTNL = rngs.normal(token_latents_BTNL.shape, dtype=token_latents_BTNL.dtype)
+        batch['rng'] = _rng
+
+        noisy_latents_BTNL = (1.0 - sigma_BT)[..., None, None]*zbar_BTNL + sigma_BT[..., None, None]*token_latents_BTNL
+        
+        pred_latents_BTNL, denoise_t = self.dynamics(
+            action_embeddings_BT1L,
+            step_idxs,
+            signal_idxs,
+            noisy_latents_BTNL
+        )
+        return pred_latents_BTNL, denoise_t
+
+    def encode(self, batch: Dict[str, jax.Array]) -> Dict[str, jax.Array]:
+
+        videos_BTHWC = batch["videos"]
+        tokenizer_outputs = self.tokenizer.mask_and_encode(
+            videos_BTHWC, rng, training=False
+        )
+        return tokenizer_outputs['z']
+
+    def dyn(self, z_BTNL: jax.Array, actions: jnp.Array, step_BT, sigma_BT) -> jax.Array:
+
+        action_embeddings_BT1L = self.action_embed(actions).reshape(
+            *batch["actions"].shape[:2], 1, self.latent_action_dim
+        )
+
         pred_latents_BTNL, denoise_t = self.dynamics(
             action_embeddings_BT1L,
             step_idxs,
             signal_idxs,
             token_latents_BTNL
         )
-        return x1_hat, h_t
+        return pred_latents_BTNL, denoise_t
+
+    def target(self, batch: Dict[str, jax.Array], sigma_BT) -> jax.Array:
+        tokenizer_outputs = self.encode(batch)
+        token_latents_BTNL = tokenizer_outputs["z"]
+        token_latents_BTNL = jax.lax.stop_gradient(token_latents_BTNL)
+
+        rng, _rng = jax.random.split(batch["rng"])
+        zbar_BTNL = rngs.normal(token_latents_BTNL.shape, dtype=token_latents_BTNL.dtype)
+        batch['rng'] = _rng
+
+        noisy_latents_BTNL = (1.0 - sigma_BT)[..., None, None]*zbar_BTNL + sigma_BT[..., None, None]*token_latents_BTNL
+
+        return noisy_latents_BTNL
 
     def sample(
         self,

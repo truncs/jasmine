@@ -771,7 +771,7 @@ class Dynamics(nnx.Module):
         mlp_ratio: float = 4.0,
         time_every: int = 4,
         space_mode: str = "wm_agent_isolated",
-        dtype: Any: jnp.float32,
+        dtype: Any = jnp.float32,
         is_action_discrete: bool = True,
         use_flash_attention: bool = False,
         *,
@@ -840,11 +840,15 @@ class Dynamics(nnx.Module):
         )
 
         self.num_step_bins = int(math.log2(k_max)) + 1
-        self.step_embed = nnx.Embed(self.num_step_bins,
-                                d_model, dtype=dtype,rngs=rngs)
+        self.step_embed = nnx.Embed(
+            self.num_step_bins,
+            d_model,
+            dtype=dtype,
+            rngs=rngs
+        )
 
         self.signal_embed = nnx.Embed(k_max + 1, d_model,
-                                    dtype=dtype,rngs=rngs)
+                                      dtype=dtype, rngs=rngs)
         # flow_x_head init: kernel_init zeros.
         # nnx.Linear uses kernel_init kwarg.
         self.flow_x_head = nnx.Linear(
