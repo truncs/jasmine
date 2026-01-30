@@ -717,7 +717,9 @@ class Decoder(nnx.Module):
         return pred_btnd
 
 class ActionEncoder(nnx.Module):
-    def __init__(self, d_model: int, n_keyboard: int = 5, is_discrete: bool = True, *, rngs: nnx.Rngs):
+    def __init__(self, d_model: int, n_keyboard: int = 5,
+                 is_discrete: bool = True, dtype:
+                 Any = jnp.float32,*, rngs: nnx.Rngs):
         self.d_model = d_model
         self.n_keyboard = n_keyboard
         
@@ -727,7 +729,7 @@ class ActionEncoder(nnx.Module):
         if is_discrete:
             self.emb_key = nnx.Embed(n_keyboard, d_model, rngs=rngs)
         else:
-            self.emb_key = nnx.Linear(n_keyboard, d_model, rngs=rngs)
+            self.emb_key = nnx.Linear(n_keyboard, d_model, dtype=dtype, rngs=rngs)
 
     def __call__(
         self,
@@ -769,8 +771,9 @@ class Dynamics(nnx.Module):
         mlp_ratio: float = 4.0,
         time_every: int = 4,
         space_mode: str = "wm_agent_isolated",
-        use_flash_attention: bool = False,
+        dtype: Any: jnp.float32,
         is_action_discrete: bool = True,
+        use_flash_attention: bool = False,
         *,
         rngs: nnx.Rngs,
     ):
@@ -790,12 +793,20 @@ class Dynamics(nnx.Module):
 
         assert d_spatial % d_bottleneck == 0
         
-        self.spatial_proj = nnx.Linear(d_spatial, d_model, use_bias=True, rngs=rngs)
+        self.spatial_proj = nnx.Linear(
+            d_spatial,
+            d_model,
+            use_bias=True,
+            dtype=dtype,
+            rngs=rngs)
         
         key = rngs.params()
         self.register_tokens = nnx.Param(jax.random.normal(key, (n_register, d_model)) * 0.02)
         
-        self.action_encoder = ActionEncoder(d_model=d_model, rngs=rngs)
+        self.action_encoder = ActionEncoder(
+            d_model=d_model,
+            dtype=dtype,
+            rngs=rngs)
 
         # Two separate tokens for shortcut conditioning
         segments = [
@@ -824,19 +835,23 @@ class Dynamics(nnx.Module):
             time_every=time_every,
             latents_only_time=False,
             use_flash_attention=use_flash_attention,
+            dtype=dtype,
             rngs=rngs,
         )
 
         self.num_step_bins = int(math.log2(k_max)) + 1
-        self.step_embed = nnx.Embed(self.num_step_bins, d_model, rngs=rngs)
+        self.step_embed = nnx.Embed(self.num_step_bins,
+                                d_model, dtype=dtype,rngs=rngs)
 
-        self.signal_embed = nnx.Embed(k_max + 1, d_model, rngs=rngs)
+        self.signal_embed = nnx.Embed(k_max + 1, d_model,
+                                    dtype=dtype,rngs=rngs)
         # flow_x_head init: kernel_init zeros.
         # nnx.Linear uses kernel_init kwarg.
         self.flow_x_head = nnx.Linear(
             d_model, d_spatial, use_bias=True, 
             kernel_init=nnx.initializers.zeros, 
             bias_init=nnx.initializers.zeros,
+            dtype=dtype,
             rngs=rngs
         )
 

@@ -134,18 +134,12 @@ class Dreamer4TokenizerMAE(nnx.Module):
         self.mse_norm = MovingRMS()
         self.lpips_norm = MovingRMS()
 
-    def __call__(self, batch: dict, training: bool = True) -> dict:
-        rngs = batch.get("rng", None)
-        videos = batch["videos"]
-        B, T, H, W, C = videos.shape
-        
-        patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
-        B, T, Hp, Wp, D = patches.shape
-        patches_flat = patches.reshape(B, T, Hp*Wp, D)
-        
-        mae_rng = nnx.Rngs(mae=rngs) if rngs is not None else None
-        
-        z_latents, (mask, keep) = self.encoder(patches_flat, rngs=mae_rng)
+    def __call__(self, batch: dict, training: bool = True, rngs=nnx.Rngs) -> dict:
+
+        outputs = mask_and_encode(batch, training, rngs=rngs)
+        z_latents = outputs['z']
+        mask = outputs['mask']
+        keep = outputs['keep']
         
         recon_patches_flat = self.decoder(z_latents)
         
@@ -157,6 +151,24 @@ class Dreamer4TokenizerMAE(nnx.Module):
             "mask": mask
         }
         return outputs
+
+    def mask_and_encode(self, batch: dict, training: bool = True, rngs: nnx.Rngs = None) -> dict:
+        rngs = batch.get("rng", None)
+        videos = batch["videos"]
+        B, T, H, W, C = videos.shape
+        
+        patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
+        B, T, Hp, Wp, D = patches.shape
+        patches_flat = patches.reshape(B, T, Hp*Wp, D)
+        
+        mae_rng = nnx.Rngs(mae=rngs) if rngs is not None else None
+        
+        z_latents, (mask, keep) = self.encoder(patches_flat, rngs=mae_rng)
+        return {
+            'z': z_latents,
+            'mask': mask,
+            'keep': keep
+        }
 
 def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.Array]:
     rng, _rng = jax.random.split(rng)

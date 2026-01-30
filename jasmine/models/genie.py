@@ -571,15 +571,9 @@ class GenieDiffusion(nnx.Module):
         patch_size: int,
         tokenizer_num_blocks: int,
         tokenizer_num_heads: int,
-        lam_dim: int,
-        lam_ffn_dim: int,
         latent_action_dim: int,
         num_actions: int,
-        lam_patch_size: int,
-        lam_num_blocks: int,
-        lam_num_heads: int,
-        lam_co_train: bool,
-        use_gt_actions: bool,
+        is_action_discrete: bool,
         dyna_dim: int,
         dyna_ffn_dim: int,
         dyna_num_blocks: int,
@@ -602,15 +596,8 @@ class GenieDiffusion(nnx.Module):
         self.tokenizer_num_blocks = tokenizer_num_blocks
         self.tokenizer_num_heads = tokenizer_num_heads
         # --- LAM ---
-        self.lam_dim = lam_dim
-        self.lam_ffn_dim = lam_ffn_dim
         self.latent_action_dim = latent_action_dim
         self.num_actions = num_actions
-        self.lam_patch_size = lam_patch_size
-        self.lam_num_blocks = lam_num_blocks
-        self.lam_num_heads = lam_num_heads
-        self.lam_co_train = lam_co_train
-        self.use_gt_actions = use_gt_actions
         # --- Dynamics ---
         self.dyna_dim = dyna_dim
         self.dyna_ffn_dim = dyna_ffn_dim
@@ -622,89 +609,90 @@ class GenieDiffusion(nnx.Module):
         self.dropout = dropout
         self.diffusion_denoise_steps = diffusion_denoise_steps
         self.decode = decode
-        self.tokenizer = TokenizerMAE(
-            in_dim=self.in_dim,
-            model_dim=self.tokenizer_dim,
-            ffn_dim=self.tokenizer_ffn_dim,
-            latent_dim=self.latent_patch_dim,
-            num_latents=self.num_patch_latents,
-            patch_size=self.patch_size,
-            num_blocks=self.tokenizer_num_blocks,
-            num_heads=self.tokenizer_num_heads,
-            dropout=0.0,
-            max_mask_ratio=0.0,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            use_flash_attention=self.use_flash_attention,
+
+
+        enc_kwargs = {
+            "d_model": 512, 
+            "n_latents": args.num_latents, 
+            "n_patches": num_patches, 
+            "n_heads": 8, 
+            "depth": 8, 
+            "dropout": 0.05,
+            "d_bottleneck": args.latent_dim,
+            "mae_p_min": 0.0, 
+            "mae_p_max": 0.9, 
+            "time_every": 4,
+            "d_patch": d_patch, 
+            "use_flash_attention": args.use_flash_attention,
+            "dtype": args.dtype,
+        }
+
+        dec_kwargs = {
+            "d_model": 512, 
+            "n_heads": 8, 
+            "n_patches": num_patches, 
+            "n_latents": args.num_latents, 
+            "depth": 12,
+            "d_patch": d_patch, 
+            "dropout": 0.05, 
+            "time_every": 4,
+            "d_bottleneck": args.latent_dim,
+            "use_flash_attention": args.use_flash_attention,
+            "dtype": args.dtype,
+        }
+
+        self.tokenizer = Dreamer4TokenizerMAE(
+            image_height=args.image_height,
+            image_width=args.image_width,
+            patch_size=args.patch_size,
+            in_dim=args.image_channels,
+            encoder_kwargs=enc_kwargs,
+            decoder_kwargs=dec_kwargs,
+            dtype=args.dtype,
             rngs=rngs,
         )
-        if self.use_gt_actions:
-            self.action_embed = nnx.Embed(
-                self.num_actions, self.latent_action_dim, rngs=rngs
-            )
-            self.lam = None
-        else:
-            self.lam = LatentActionModel(
-                in_dim=self.in_dim,
-                model_dim=self.lam_dim,
-                ffn_dim=self.lam_ffn_dim,
-                latent_dim=self.latent_patch_dim,
-                num_latents=self.num_actions,
-                patch_size=self.lam_patch_size,
-                num_blocks=self.lam_num_blocks,
-                num_heads=self.lam_num_heads,
-                dropout=0.0,
-                codebook_dropout=0.0,
-                param_dtype=self.param_dtype,
-                dtype=self.dtype,
-                use_flash_attention=self.use_flash_attention,
-                rngs=rngs,
-            )
-            self.action_embed = None
+        self.action_embed = ActionEncoder(
+            self.latent_action_dim, self.num_actions, self.is_action_discrete, rngs=rngs
+        )
+        
         assert (
             self.diffusion_denoise_steps > 0
         ), "diffusion_denoise_steps must be greater than 0 when using the diffusion backend"
-        self.dynamics = DynamicsDiffusion(
-            model_dim=self.dyna_dim,
-            ffn_dim=self.dyna_ffn_dim,
-            latent_patch_dim=self.latent_patch_dim,
-            latent_action_dim=self.latent_action_dim,
-            num_blocks=self.dyna_num_blocks,
-            num_heads=self.dyna_num_heads,
-            denoise_steps=self.diffusion_denoise_steps,
+        
+        self.dynamics = Dynamics(
+            d_model=self.dyna_dim,
+            d_bottleneck=self.dyna_ffn_dim,
+            d_spatial: int,
+            n_spatial: int,
+            n_register: int,
+            n_agent: int,
+            n_heads=self.dyna_num_heads,
+            depth: int,
+            k_max: int,
             dropout=self.dropout,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
+            mlp_ratio: float = 4.0,
+            time_every: int = 4,
+            space_mode: str = "wm_agent_isolated",
+            dtype=self.param_dtype,
+            is_action_discrete=self.is_action_discrete,
             use_flash_attention=self.use_flash_attention,
             rngs=rngs,
-            decode=self.decode,
         )
 
     def __call__(
         self,
         batch: Dict[str, jax.Array],
+        step_idxs,
+        signal_idxs,
     ) -> Dict[str, jax.Array]:
         videos_BTHWC = batch["videos"]
         H, W = videos_BTHWC.shape[2:4]
-        latent_actions_BTm11L = None
-        action_embeddings_BTm11L = None
-        if self.use_gt_actions:
-            assert self.action_embed is not None
-            action_indices_E = None
-            action_embeddings_BT1L = self.action_embed(batch["actions"]).reshape(
-                *batch["actions"].shape[:2], 1, self.latent_action_dim
-            )
-            action_embeddings_BTm11L = action_embeddings_BT1L[:, :-1]
-        else:
-            assert self.lam is not None
-            lam_outputs = self.lam.vq_encode(videos_BTHWC, training=False)
-            z_q_BTm11L = lam_outputs["z_q"]
-            action_indices_E = lam_outputs["indices"]
-            latent_actions_BTm11L = jax.lax.cond(
-                self.lam_co_train,
-                lambda: z_q_BTm11L,
-                lambda: jax.lax.stop_gradient(z_q_BTm11L),
-            )
+
+        assert self.action_embed is not None
+        action_indices_E = None
+        action_embeddings_BT1L = self.action_embed(batch["actions"]).reshape(
+            *batch["actions"].shape[:2], 1, self.latent_action_dim
+        )
 
         rng, _rng = jax.random.split(batch["rng"])
         tokenizer_outputs = self.tokenizer.mask_and_encode(
@@ -712,25 +700,13 @@ class GenieDiffusion(nnx.Module):
         )
         token_latents_BTNL = tokenizer_outputs["z"]
         token_latents_BTNL = jax.lax.stop_gradient(token_latents_BTNL)
-        outputs = dict(
-            token_latents=token_latents_BTNL,
-            latent_actions=(
-                action_embeddings_BTm11L
-                if self.use_gt_actions
-                else latent_actions_BTm11L
-            ),
-            rng=rng,
+        pred_latents_BTNL, denoise_t = self.dynamics(
+            action_embeddings_BT1L,
+            step_idxs,
+            signal_idxs,
+            token_latents_BTNL
         )
-        pred_latents_BTNL, denoise_t = self.dynamics(outputs)
-        outputs["x_pred"] = pred_latents_BTNL
-        outputs["x_gt"] = token_latents_BTNL
-        outputs["signal_level"] = denoise_t
-        outputs["recon"] = self.tokenizer.decode(pred_latents_BTNL, (H, W))
-
-        if action_indices_E is not None:
-            outputs["lam_indices"] = action_indices_E
-
-        return outputs
+        return x1_hat, h_t
 
     def sample(
         self,
