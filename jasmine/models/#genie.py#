@@ -699,7 +699,7 @@ class GenieDiffusion(nnx.Module):
         z_BTNL = self.encode(batch)
         z_BTNL = jax.lax.stop_gradient(z_BTNL)
         z_corrupt_BTNL = self.target(z_BTNL, sigma_BT)
-        pred_latents_BTNL, denoise_t = self.dyn(z_corrupt_BTNL, action_embeddings_BT1L, step_BT, sigma_BT)
+        pred_latents_BTNL, denoise_t = self.dyn(z_corrupt_BTNL, action_embeddings_BT1L, step_BT, sigma_BT  )
 
         return pred_latents_BTNL, denoise_t
 

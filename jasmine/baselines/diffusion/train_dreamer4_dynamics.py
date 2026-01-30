@@ -1,17 +1,8 @@
-"""
-Parts of the diffusion training, sampling, and DiT implementation are adapted from:
-https://github.com/kvfrans/shortcut-models
-
-For diffusion-forcing training, we integrate several elements inspired by Dreamer 4
-(https://arxiv.org/abs/2509.24527).
-"""
-
 import os
 
-os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
-
-from dataclasses import dataclass, field
 import itertools
+from dataclasses import dataclass, field
+from functools import partial
 from typing import cast, Optional
 
 import einops
@@ -38,6 +29,7 @@ from jasmine.utils.train_utils import (
     print_compiled_cost_analysis,
 )
 
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
 
 @dataclass
 class Args:
@@ -455,8 +447,9 @@ def main(args: Args) -> None:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
 
-        @partial(jax.jit, static_argnames=("shape_bt","k_max",))
-        def _sample_tau_for_step(rng, shape_bt, k_max:int, step_idx:jnp.ndarray, *, dtype=jnp.float32):
+        @partial(jax.jit, static_argnames=("shape_bt", "k_max",))
+        def _sample_tau_for_step(rng, shape_bt, k_max: int,
+                                 step_idx: jnp.ndarray, *, dtype=jnp.float32):
             B_, T_ = shape_bt
             K = (1 << step_idx)
             u = jax.random.uniform(rng, (B_, T_), dtype=dtype)
@@ -465,24 +458,33 @@ def main(args: Args) -> None:
             tau_idx = j_idx * (k_max // K)
             return tau, tau_idx
 
-       @partial(jax.jit, static_argnames=("shape_bt","k_max",))
-       def _sample_step_excluding_dmin(rng, shape_bt, k_max:int):
-           B_, T_ = shape_bt
-           emax = jnp.log2(k_max).astype(jnp.int32)
-           step_idx = jax.random.randint(rng, (B_, T_), 0, emax, dtype=jnp.int32)  # exclude emax
-           d = 1.0 / (1 << step_idx).astype(jnp.float32)
-           return d, step_idx
+        @partial(jax.jit, static_argnames=("shape_bt", "k_max",))
+        def _sample_step_excluding_dmin(rng, shape_bt, k_max: int):
+            B_, T_ = shape_bt
+            emax = jnp.log2(k_max).astype(jnp.int32)
+            step_idx = jax.random.randint(rng, (B_, T_), 0, emax, dtype=jnp.int32)  # exclude emax
+            d = 1.0 / (1 << step_idx).astype(jnp.float32)
+            return d, step_idx
 
         B, T = inputs['videos'].shape[:2]
+
+        k_max = args.k_max
+        B_self = args.batch_bootstrap
+        bootstrap_start = args.bootstrap_start
 
         B_emp = B - B_self
         actions = inputs['actions']
 
-        emax = jnp.log2(k_max).astype(jnp.int32)
-        step_idx_emp = jnp.full((B_emp, T), e_max, dtype=jnp.int32)
+        rng, key_step_self = jax.random_split(inputs['rng'])
+        
+        emax = jnp.log2(args.k_max).astype(jnp.int32)
+        step_idx_emp = jnp.full((B_emp, T), emax, dtype=jnp.int32)
         d_self, step_idx_self = _sample_step_excluding_dmin(key_step_self, (B_self, T), k_max)
         step_idx_full = jnp.concatenate([step_idx_emp, step_idx_self], axis=0)   # (B,T)
 
+        rng, key_sigma_full = jax.random.split(rng)
+        inputs['rng'] = rng
+        
         # --- Signal levels on each row's grid (one call for whole batch) ---
         sigma_full, sigma_idx_full = _sample_tau_for_step(key_sigma_full, (B, T), k_max, step_idx_full)
         sigma_emp   = sigma_full[:B_emp]
@@ -498,14 +500,16 @@ def main(args: Args) -> None:
         sigma_idx_plus = sigma_idx_self + (k_max * d_half).astype(jnp.int32)
 
         # Corrupt Inputs
-        z_corrupt_BTNL = model.target(batch)
-        
+        z_BTNL = model.encode(inputs)
+        z_corrupt_BTNL = model.target(z_BTNL)
+
         # Call bootstrap dynamics
         pred_full_BTNL = model.dyn(z_corrupt_BTNL, actions, step_idx_full, sigma_idx_full)
         pred_emp_BTNL = pred_full_BTNL[:B_emp]
         pred_self_BTNL = pred_full_BTNL[B_emp:]
 
-        flow_emp = jnp.mean((pred_emp_BTNL - z_corrupt_BTNL[:B_emp])**2, axis=(2, 3))
+        flow_emp = jnp.mean(
+            (pred_emp_BTNL - z_BTNL[:B_emp])**2, axis=(2, 3))
         loss_emp = jnp.mean(flow_emp * w_emp)
 
         do_boot = (B_self > 0) & (step >= bootstrap_start)
@@ -513,23 +517,28 @@ def main(args: Args) -> None:
         def _boot_loss():
             z_corrupt_self_BTNL = z_corrupt_BTNL[B_emp:]
             actions_self = actions[B_emp:]
-            pred_half1_BTNL =  model.dyn(z_corrupt_self_BTNL, actions_self, step_idx_half, sigma_idx_self)
+            pred_half1_BTNL = model.dyn(
+                z_corrupt_self_BTNL,
+                actions_self,
+                step_idx_half,
+                sigma_idx_self
+            )
 
-            b_prime = (pred_half1_BTNL - z_corrupt_self_BTNL) / (1.0 - sigma_self)[...,None,None]
-            z_prime_BTNL = z_corrupt_self_BTNL + b_prime * d_half[...,None,None]
+            b_prime = ((pred_half1_BTNL - z_corrupt_self_BTNL) /
+                       (1.0 - sigma_self)[..., None, None])
+            z_prime_BTNL = z_corrupt_self_BTNL + b_prime * d_half[..., None, None]
             pred_half2_BTNL = model.dyn(z_prime_BTNL, actions_self, step_idx_half, sigma_idx_plus)
-            b_doubleprime = (pred_half2_BTNL - z_prime_BTNL) / (1.0 - sigma_plus)[...,None,None]
-            vhat_sigma = (pred_self_BTNL - z_corrupt_self_BTNL) / (1.0 - sigma_self)[...,None,None]
+            b_doubleprime = (pred_half2_BTNL - z_prime_BTNL) / (1.0 - sigma_plus)[...,None, None]
+            vhat_sigma = (pred_self_BTNL - z_corrupt_self_BTNL) / (1.0 - sigma_self)[...,None, None]
             vbar_target = jax.lax.stop_gradient((b_prime + b_doubleprime) / 2.0)
-            boot_per = (1.0 - sigma_self)**2 * jnp.mean((vhat_sigma - vbar_target)**2, axis=(2,3))  # (B_self,T)
+            boot_per = (1.0 - sigma_self)**2 * jnp.mean((vhat_sigma - vbar_target)**2, axis=(2, 3))  # (B_self,T)
             loss_self = jnp.mean(boot_per * w_self)
             return loss_self, jnp.mean(boot_per)
-
 
         loss_self, boot_mse = jax.lax.cond(
             do_boot,
             _boot_loss,
-            lambda: (jnp.array(0.0, dtype=z1.dtype), jnp.array(0.0, dtype=z1.dtype)),
+            lambda: (jnp.array(0.0, dtype=z_BTNL.dtype), jnp.array(0.0, dtype=z_BTNL.dtype)),
         )
 
         # Combine (row-weighted by nominal B parts; denominator B keeps scale constant)
