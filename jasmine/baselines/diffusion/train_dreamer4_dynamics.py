@@ -473,7 +473,7 @@ def main(args: Args) -> None:
         actions = inputs['actions']
 
         rng, key_step_self = jax.random_split(inputs['rng'])
-        
+
         emax = jnp.log2(args.k_max).astype(jnp.int32)
         step_idx_emp = jnp.full((B_emp, T), emax, dtype=jnp.int32)
         d_self, step_idx_self = _sample_step_excluding_dmin(key_step_self, (B_self, T), k_max)
@@ -481,7 +481,7 @@ def main(args: Args) -> None:
 
         rng, key_sigma_full = jax.random.split(rng)
         inputs['rng'] = rng
-        
+
         # --- Signal levels on each row's grid (one call for whole batch) ---
         sigma_full, sigma_idx_full = _sample_tau_for_step(key_sigma_full, (B, T), k_max, step_idx_full)
         sigma_emp   = sigma_full[:B_emp]
@@ -538,15 +538,16 @@ def main(args: Args) -> None:
             lambda: (jnp.array(0.0, dtype=z_BTNL.dtype), jnp.array(0.0, dtype=z_BTNL.dtype)),
         )
 
-        # Combine (row-weighted by nominal B parts; denominator B keeps scale constant)
+        # Combine (row-weighted by nominal B parts; denominator B keeps scale
+        # constant)
         loss = ((loss_emp * (B - B_self)) + (loss_self * B_self)) / B
 
         metrics = {
             "flow_mse": jnp.mean(flow_emp),
             "bootstrap_mse": boot_mse,
         }
-        
-        return loss, (None, metrics)
+
+        return loss, metrics
 
     @nnx.jit(donate_argnums=0)
     def train_step(
@@ -556,7 +557,7 @@ def main(args: Args) -> None:
             model.train()
             return dynamics_loss_fn(model, inputs)
 
-        (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
+        (loss, (metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
             optimizer.model
         )
         optimizer.update(grads)
@@ -564,7 +565,7 @@ def main(args: Args) -> None:
             metrics["gradients_std/"] = jax.tree.map(
                 lambda x: x.std(), grads["params"]["dynamics"]
             )
-        return loss, recon, metrics
+        return loss, metrics
 
     @nnx.jit
     def val_step(genie: GenieDiffusion, inputs: dict) -> dict:
@@ -703,7 +704,7 @@ def main(args: Args) -> None:
             # --- Train step ---
             rng, _rng_mask = jax.random.split(rng, 2)
             batch["rng"] = _rng_mask
-            loss, recon, metrics = train_step(optimizer, batch)
+            loss, metrics = train_step(optimizer, batch)
             if step == first_step:
                 print_mem_stats("After params initialized")
             step += 1
@@ -730,105 +731,8 @@ def main(args: Args) -> None:
             if args.log:
                 if step % args.log_interval == 0 and jax.process_index() == 0:
                     log_dict = {"loss": loss, "step": step, **metrics}
-                    if val_results:
-                        log_dict.update(val_results["metrics"])
                     wandb.log(log_dict)
-                if step % args.log_image_interval == 0:
-                    gt_seq = batch["videos"][0].astype(jnp.float32) / 255.0
-                    recon_seq = recon[0].clip(0, 1)
-                    comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
-                    comparison_seq = einops.rearrange(
-                        comparison_seq * 255, "t h w c -> h (t w) c"
-                    )
-                    if val_results:
-                        val_results["gt_seq_val"] = (
-                            val_results["gt_batch"]["videos"][0].astype(jnp.float32)
-                            / 255.0
-                        )
-                        val_results["recon_seq_val"] = val_results["recon"][0].clip(
-                            0, 1
-                        )
-                        val_comparison_seq = jnp.concatenate(
-                            (val_results["gt_seq_val"], val_results["recon_seq_val"]),
-                            axis=1,
-                        )
-                        val_results["val_comparison_seq"] = einops.rearrange(
-                            val_comparison_seq * 255, "t h w c -> h (t w) c"
-                        )
-                        if args.eval_full_frame:
-                            val_results["full_frame_seq_val"] = val_results[
-                                "full_frame"
-                            ][0].clip(0, 1)
-                            val_results["val_full_frame_comparison_seq"] = (
-                                jnp.concatenate(
-                                    (
-                                        val_results["gt_seq_val"],
-                                        val_results["full_frame_seq_val"],
-                                    ),
-                                    axis=1,
-                                )
-                            )
-                            val_results["val_full_frame_comparison_seq"] = (
-                                einops.rearrange(
-                                    val_results["val_full_frame_comparison_seq"] * 255,
-                                    "t h w c -> h (t w) c",
-                                )
-                            )
-                    # NOTE: Process-dependent control flow deliberately happens
-                    # after indexing operation since it must not contain code
-                    # sections that lead to cross-accelerator communication.
-                    if jax.process_index() == 0:
-                        log_images = dict(
-                            image=wandb.Image(np.asarray(gt_seq[args.seq_len - 1])),
-                            recon=wandb.Image(np.asarray(recon_seq[args.seq_len - 1])),
-                            true_vs_recon=wandb.Image(
-                                np.asarray(comparison_seq.astype(np.uint8))
-                            ),
-                        )
-                        if val_results:
-                            log_images.update(
-                                dict(
-                                    val_image=wandb.Image(
-                                        np.asarray(
-                                            val_results["gt_seq_val"][args.seq_len - 1]
-                                        )
-                                    ),
-                                    val_recon=wandb.Image(
-                                        np.asarray(
-                                            val_results["recon_seq_val"][
-                                                args.seq_len - 1
-                                            ]
-                                        )
-                                    ),
-                                    val_true_vs_recon=wandb.Image(
-                                        np.asarray(
-                                            val_results["val_comparison_seq"].astype(
-                                                np.uint8
-                                            )
-                                        )
-                                    ),
-                                )
-                            )
-                            if args.eval_full_frame:
-                                log_images.update(
-                                    dict(
-                                        val_full_frame=wandb.Image(
-                                            np.asarray(
-                                                val_results["full_frame_seq_val"][
-                                                    args.seq_len - 1
-                                                ]
-                                            )
-                                        ),
-                                        val_true_vs_full_frame=wandb.Image(
-                                            np.asarray(
-                                                val_results[
-                                                    "val_full_frame_comparison_seq"
-                                                ].astype(np.uint8)
-                                            )
-                                        ),
-                                    )
-                                )
-                        wandb.log(log_images)
+
             # --- Checkpointing ---
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
                 assert checkpoint_manager is not None
