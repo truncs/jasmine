@@ -103,6 +103,8 @@ class Args:
     val_temperature: float = 1
     val_sample_argmax: bool = False
     wandb_id: str = ""
+    num_workers: int = 8
+    prefetch_buffer_size: int = 1
 
 
 def build_model(args: Args, rng: jax.Array) -> tuple[GenieDiffusion, jax.Array]:
