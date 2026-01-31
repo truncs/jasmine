@@ -132,6 +132,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[GenieDiffusion, jax.Array]:
         dyna_num_heads=args.dyna_num_heads,
         dyna_num_agents=args.dyna_num_agents,
         dyna_num_registers=args.dyna_num_registers,
+        dyna_kmax=args.dyna_kmax,
         dropout=args.dropout,
         diffusion_denoise_steps=args.diffusion_denoise_steps,
         param_dtype=args.param_dtype,

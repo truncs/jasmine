@@ -549,6 +549,7 @@ class GenieDiffusion(nnx.Module):
         dyna_num_heads: int,
         dyna_num_registers: int,
         dyna_num_agents: int,
+        dyna_kmax: int,
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
@@ -574,6 +575,9 @@ class GenieDiffusion(nnx.Module):
         self.dyna_ffn_dim = dyna_ffn_dim
         self.dyna_num_blocks = dyna_num_blocks
         self.dyna_num_heads = dyna_num_heads
+        self.dyna_num_registers = dyna_num_registers
+        self.dyna_num_agents = dyna_num_agents
+        self.dyna_kmax = dyna_kmax
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
@@ -641,7 +645,7 @@ class GenieDiffusion(nnx.Module):
             n_agent=dyna_num_agents,
             n_heads=self.dyna_num_heads,
             depth=self.dyna_num_blocks,
-            k_max=self.dyna_kmax,
+            k_max=dyna_kmax,
             dropout=self.dropout,
             dtype=dtype,
             use_flash_attention=self.use_flash_attention,
