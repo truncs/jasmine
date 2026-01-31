@@ -632,10 +632,6 @@ class GenieDiffusion(nnx.Module):
             rngs=rngs
         )
 
-        assert (
-            self.diffusion_denoise_steps > 0
-        ), "diffusion_denoise_steps must be greater than 0 when using the diffusion backend"
-
         self.dynamics = Dynamics(
             d_model=self.dyna_dim,
             d_bottleneck=latent_patch_dim,
