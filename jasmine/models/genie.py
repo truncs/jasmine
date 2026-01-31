@@ -553,7 +553,6 @@ class GenieDiffusion(nnx.Module):
         dtype: jnp.dtype,
         use_flash_attention: bool,
         rngs: nnx.Rngs,
-        batch_self: int,
         dropout: float = 0.0,
         diffusion_denoise_steps: int = 0,
         decode: bool = False,
