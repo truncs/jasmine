@@ -689,7 +689,7 @@ class GenieDiffusion(nnx.Module):
         )
         return tokenizer_outputs['z']
 
-    def dyn(self, z_BTNL: jax.Array, actions: jnp.Array, step_BT, sigma_BT) -> jax.Array:
+    def dyn(self, z_BTNL: jax.Array, actions: jax.Array, step_BT, sigma_BT) -> jax.Array:
 
         action_embeddings_BT1L = self.action_embed(actions).reshape(
             actions.shape[:2], 1, self.latent_action_dim
