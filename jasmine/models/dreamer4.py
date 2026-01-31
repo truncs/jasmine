@@ -772,7 +772,6 @@ class Dynamics(nnx.Module):
         time_every: int = 4,
         space_mode: str = "wm_agent_isolated",
         dtype: Any = jnp.float32,
-        is_action_discrete: bool = True,
         use_flash_attention: bool = False,
         *,
         rngs: nnx.Rngs,
@@ -799,14 +798,18 @@ class Dynamics(nnx.Module):
             use_bias=True,
             dtype=dtype,
             rngs=rngs)
+
+        self.action_encoder = nnx.Linear(
+            d_spatial,
+            d_model,
+            use_bias,
+            dtype=dtype,
+            rngs=rngs
+        )
         
         key = rngs.params()
         self.register_tokens = nnx.Param(jax.random.normal(key, (n_register, d_model)) * 0.02)
         
-        self.action_encoder = ActionEncoder(
-            d_model=d_model,
-            dtype=dtype,
-            rngs=rngs)
 
         # Two separate tokens for shortcut conditioning
         segments = [
@@ -861,7 +864,7 @@ class Dynamics(nnx.Module):
 
     def __call__(
         self,
-        actions,             # (B,T)
+        actions,             # (B,T,N,D)
         step_idxs,           # (B,T)
         signal_idxs,         # (B,T)
         packed_enc_tokens,   # (B,T,n_s,d_spatial)
@@ -872,9 +875,9 @@ class Dynamics(nnx.Module):
         # --- 1) Project spatial tokens to model dimension
         spatial_tokens = self.spatial_proj(packed_enc_tokens) # (B, T, n_spatial, d_model)
 
-        # --- 2) Encode actions to d_model
-        action_tokens = self.action_encoder(actions)  # (B, T, N_a, d_model)
-
+        # -- 2) Prepare the action tokens
+        action_tokens = self.action_encoder(actions)
+        
         # --- 3) Prepare learned register tokens
         B, T = spatial_tokens.shape[:2]
         register_tokens = jnp.broadcast_to(

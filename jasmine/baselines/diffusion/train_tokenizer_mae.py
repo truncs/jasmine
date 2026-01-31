@@ -160,9 +160,9 @@ class Dreamer4TokenizerMAE(nnx.Module):
         patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
         B, T, Hp, Wp, D = patches.shape
         patches_flat = patches.reshape(B, T, Hp*Wp, D)
-        
+
         mae_rng = nnx.Rngs(mae=rngs) if rngs is not None else None
-        
+
         z_latents, (mask, keep) = self.encoder(patches_flat, rngs=mae_rng)
         return {
             'z': z_latents,

@@ -31,6 +31,7 @@ from jasmine.utils.train_utils import (
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
 
+
 @dataclass
 class Args:
     # Experiment
@@ -54,28 +55,28 @@ class Args:
     warmup_steps: int = 5000
     lr_schedule: str = "wsd"  # supported options: wsd, cos
     # Tokenizer
+    image_height: int = 224
+    image_width: int = 224
     tokenizer_dim: int = 512
     tokenizer_ffn_dim: int = 2048
     latent_patch_dim: int = 32
-    num_patch_latents: int = 1024
+    num_patch_latents: int = 128
     patch_size: int = 16
     tokenizer_num_blocks: int = 4
     tokenizer_num_heads: int = 8
     tokenizer_checkpoint: str = ""
-    # LAM
-    lam_dim: int = 512
-    lam_ffn_dim: int = 2048
+    # Action
+    is_action_discrete: bool = False
     latent_action_dim: int = 32
-    num_actions: int = 6
-    lam_patch_size: int = 16
-    lam_num_blocks: int = 4
-    lam_num_heads: int = 8
-    lam_checkpoint: str = ""
+    num_actions: int = 2
     # Dynamics
-    dyna_dim: int = 512
+    dyna_dim: int = 128
     dyna_ffn_dim: int = 2048
-    dyna_num_blocks: int = 6
+    dyna_num_blocks: int = 8
     dyna_num_heads: int = 8
+    dyna_num_registers: int = 4
+    dyna_num_agents: int = 1
+    dyna_kmax: int = 8
     dropout: float = 0.0
     diffusion_denoise_steps: int = 0
     diffusion_use_ramp_weight: bool = True
@@ -110,6 +111,8 @@ def build_model(args: Args, rng: jax.Array) -> tuple[GenieDiffusion, jax.Array]:
     genie = GenieDiffusion(
         # Tokenizer
         in_dim=args.image_channels,
+        image_height=args.image_height,
+        image_width=args.image_width,
         tokenizer_dim=args.tokenizer_dim,
         tokenizer_ffn_dim=args.tokenizer_ffn_dim,
         latent_patch_dim=args.latent_patch_dim,
@@ -117,16 +120,10 @@ def build_model(args: Args, rng: jax.Array) -> tuple[GenieDiffusion, jax.Array]:
         patch_size=args.patch_size,
         tokenizer_num_blocks=args.tokenizer_num_blocks,
         tokenizer_num_heads=args.tokenizer_num_heads,
-        # LAM
-        lam_dim=args.lam_dim,
-        lam_ffn_dim=args.lam_ffn_dim,
+        # Action
+        is_action_discrete=args.is_action_discrete,
         latent_action_dim=args.latent_action_dim,
         num_actions=args.num_actions,
-        lam_patch_size=args.lam_patch_size,
-        lam_num_blocks=args.lam_num_blocks,
-        lam_num_heads=args.lam_num_heads,
-        lam_co_train=not args.lam_checkpoint,
-        use_gt_actions=args.use_gt_actions,
         # Dynamics
         dyna_dim=args.dyna_dim,
         dyna_ffn_dim=args.dyna_ffn_dim,

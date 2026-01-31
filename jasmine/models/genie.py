@@ -9,6 +9,8 @@ import orbax.checkpoint as ocp
 from jasmine.models.dynamics import DynamicsMaskGIT, DynamicsCausal, DynamicsDiffusion
 from jasmine.models.lam import LatentActionModel
 from jasmine.models.tokenizer import TokenizerVQVAE, TokenizerMAE
+from jasmine.baselines.diffusion.train_tokenizer_mae import Dreamer4TokenizerMAE
+from jasmine.models.dreamer4 import Dynamics, ActionEncoder
 
 
 class GenieMaskGIT(nnx.Module):
@@ -93,62 +95,26 @@ class GenieMaskGIT(nnx.Module):
             use_flash_attention=self.use_flash_attention,
             rngs=rngs,
         )
-        if self.use_gt_actions:
-            self.action_embed = nnx.Embed(
-                self.num_actions, self.latent_action_dim, rngs=rngs
-            )
-            self.lam = None
-        else:
-            self.lam = LatentActionModel(
-                in_dim=self.in_dim,
-                model_dim=self.lam_dim,
-                ffn_dim=self.lam_ffn_dim,
-                latent_dim=self.latent_patch_dim,
-                num_latents=self.num_actions,
-                patch_size=self.lam_patch_size,
-                num_blocks=self.lam_num_blocks,
-                num_heads=self.lam_num_heads,
-                dropout=0.0,
-                codebook_dropout=0.0,
-                param_dtype=self.param_dtype,
-                dtype=self.dtype,
-                use_flash_attention=self.use_flash_attention,
-                rngs=rngs,
-            )
-            self.action_embed = None
-        if self.dyna_type == "maskgit":
-            self.dynamics = DynamicsMaskGIT(
-                model_dim=self.dyna_dim,
-                ffn_dim=self.dyna_ffn_dim,
-                num_latents=self.num_patch_latents,
-                latent_action_dim=self.latent_action_dim,
-                num_blocks=self.dyna_num_blocks,
-                num_heads=self.dyna_num_heads,
-                dropout=self.dropout,
-                mask_limit=self.mask_limit,
-                param_dtype=self.param_dtype,
-                dtype=self.dtype,
-                use_flash_attention=self.use_flash_attention,
-                decode=self.decode,
-                rngs=rngs,
-            )
-        elif self.dyna_type == "causal":
-            self.dynamics = DynamicsCausal(
-                model_dim=self.dyna_dim,
-                ffn_dim=self.dyna_ffn_dim,
-                num_latents=self.num_patch_latents,
-                latent_action_dim=self.latent_action_dim,
-                num_blocks=self.dyna_num_blocks,
-                num_heads=self.dyna_num_heads,
-                dropout=self.dropout,
-                param_dtype=self.param_dtype,
-                dtype=self.dtype,
-                use_flash_attention=self.use_flash_attention,
-                decode=self.decode,
-                rngs=rngs,
-            )
-        else:
-            raise ValueError(f"Invalid dynamics type: {self.dyna_type}")
+
+        self.action_embed = nnx.Embed(
+            self.num_actions,
+            self.latent_action_dim, rngs=rngs
+        )
+
+        self.dynamics = DynamicsCausal(
+            model_dim=self.dyna_dim,
+            ffn_dim=self.dyna_ffn_dim,
+            num_latents=self.num_patch_latents,
+            latent_action_dim=self.latent_action_dim,
+            num_blocks=self.dyna_num_blocks,
+            num_heads=self.dyna_num_heads,
+            dropout=self.dropout,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            use_flash_attention=self.use_flash_attention,
+            decode=self.decode,
+            rngs=rngs,
+        )
 
     def __call__(
         self,
@@ -564,6 +530,9 @@ class GenieDiffusion(nnx.Module):
     def __init__(
         self,
         in_dim: int,
+        image_height: int,
+        image_width: int,
+        image_channels: int,
         tokenizer_dim: int,
         tokenizer_ffn_dim: int,
         latent_patch_dim: int,
@@ -578,6 +547,8 @@ class GenieDiffusion(nnx.Module):
         dyna_ffn_dim: int,
         dyna_num_blocks: int,
         dyna_num_heads: int,
+        dyna_num_registers: int,
+        dyna_num_agents: int,
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
@@ -585,6 +556,7 @@ class GenieDiffusion(nnx.Module):
         batch_self: int,
         dropout: float = 0.0,
         diffusion_denoise_steps: int = 0,
+        decode: bool = False,
     ):
         # --- Tokenizer ---
         self.in_dim = in_dim
@@ -610,71 +582,73 @@ class GenieDiffusion(nnx.Module):
         self.diffusion_denoise_steps = diffusion_denoise_steps
         self.decode = decode
 
+        num_patches = (image_height // patch_size) * (image_width // patch_size)
+
+        d_patch = in_dim * patch_size ** 2
 
         enc_kwargs = {
-            "d_model": 512, 
-            "n_latents": args.num_latents, 
-            "n_patches": num_patches, 
-            "n_heads": 8, 
-            "depth": 8, 
+            "d_model": 512,
+            "n_latents": num_patch_latents,
+            "n_patches": num_patches,
+            "n_heads": 8,
+            "depth": 8,
             "dropout": 0.05,
-            "d_bottleneck": args.latent_dim,
-            "mae_p_min": 0.0, 
-            "mae_p_max": 0.9, 
+            "d_bottleneck": latent_patch_dim,
+            "mae_p_min": 0.0,
+            "mae_p_max": 0.9,
             "time_every": 4,
-            "d_patch": d_patch, 
-            "use_flash_attention": args.use_flash_attention,
-            "dtype": args.dtype,
+            "d_patch": d_patch,
+            "use_flash_attention": use_flash_attention,
+            "dtype": dtype,
         }
 
         dec_kwargs = {
-            "d_model": 512, 
-            "n_heads": 8, 
-            "n_patches": num_patches, 
-            "n_latents": args.num_latents, 
+            "d_model": 512,
+            "n_heads": 8,
+            "n_patches": num_patches,
+            "n_latents": num_patch_latents,
             "depth": 12,
-            "d_patch": d_patch, 
-            "dropout": 0.05, 
+            "d_patch": d_patch,
+            "dropout": 0.05,
             "time_every": 4,
-            "d_bottleneck": args.latent_dim,
-            "use_flash_attention": args.use_flash_attention,
-            "dtype": args.dtype,
+            "d_bottleneck": latent_patch_dim,
+            "use_flash_attention": use_flash_attention,
+            "dtype": dtype,
         }
 
         self.tokenizer = Dreamer4TokenizerMAE(
-            image_height=args.image_height,
-            image_width=args.image_width,
-            patch_size=args.patch_size,
-            in_dim=args.image_channels,
+            image_height=image_height,
+            image_width=image_width,
+            patch_size=patch_size,
+            in_dim=in_dim,
             encoder_kwargs=enc_kwargs,
             decoder_kwargs=dec_kwargs,
-            dtype=args.dtype,
+            dtype=dtype,
             rngs=rngs,
         )
         self.action_embed = ActionEncoder(
-            self.latent_action_dim, self.num_actions, self.is_action_discrete, rngs=rngs
+            d_model=latent_action_dim,
+            n_keyboard=num_actions,
+            is_action_discrete=is_action_discrete,
+            rngs=rngs
         )
-        
+
         assert (
             self.diffusion_denoise_steps > 0
         ), "diffusion_denoise_steps must be greater than 0 when using the diffusion backend"
-        
+
         self.dynamics = Dynamics(
             d_model=self.dyna_dim,
-            d_bottleneck=self.dyna_ffn_dim,
-            d_spatial: int,
-            n_spatial: int,
-            n_register: int,
-            n_agent: int,
+            d_bottleneck=latent_patch_dim,
+            d_spatial=latent_patch_dim,
+            n_spatial=num_patch_latents,
+            n_register=dyna_num_registers,
+            n_agent=dyna_num_agents,
             n_heads=self.dyna_num_heads,
-            depth: int,
-            k_max: int,
+            depth=self.dyna_num_blocks,
+            k_max=self.dyna_kmax,
             dropout=self.dropout,
-            mlp_ratio: float = 4.0,
-            time_every: int = 4,
-            space_mode: str = "wm_agent_isolated",
-            dtype=self.param_dtype,
-            is_action_discrete=self.is_action_discrete,
+            dtype=dtype,
             use_flash_attention=self.use_flash_attention,
             rngs=rngs,
         )
@@ -689,7 +663,6 @@ class GenieDiffusion(nnx.Module):
         H, W = videos_BTHWC.shape[2:4]
 
         assert self.action_embed is not None
-        action_indices_E = None
         action_embeddings_BT1L = self.action_embed(batch["actions"]).reshape(
             *batch["actions"].shape[:2], 1, self.latent_action_dim
         )
@@ -699,38 +672,42 @@ class GenieDiffusion(nnx.Module):
         z_BTNL = self.encode(batch)
         z_BTNL = jax.lax.stop_gradient(z_BTNL)
         z_corrupt_BTNL = self.target(z_BTNL, sigma_BT)
-        pred_latents_BTNL, denoise_t = self.dyn(z_corrupt_BTNL, action_embeddings_BT1L, step_BT, sigma_BT)
+        pred_latents_BTNL, denoise_t = self.dyn(
+            z_corrupt_BTNL,
+            action_embeddings_BT1L,
+            step_BT, sigma_BT
+        )
 
         return pred_latents_BTNL, denoise_t
 
-    def encode(self, batch: Dict[str, jax.Array]) -> Dict[str, jax.Array]:
+    def encode(self, batch: Dict[str, jax.Array], *,
+               rngs: nnx.Rngs) -> Dict[str, jax.Array]:
 
         videos_BTHWC = batch["videos"]
         tokenizer_outputs = self.tokenizer.mask_and_encode(
-            videos_BTHWC, rng, training=False
+            videos_BTHWC, rngs, training=False
         )
         return tokenizer_outputs['z']
 
     def dyn(self, z_BTNL: jax.Array, actions: jnp.Array, step_BT, sigma_BT) -> jax.Array:
 
         action_embeddings_BT1L = self.action_embed(actions).reshape(
-            *batch["actions"].shape[:2], 1, self.latent_action_dim
+            actions.shape[:2], 1, self.latent_action_dim
         )
 
         pred_latents_BTNL, denoise_t = self.dynamics(
             action_embeddings_BT1L,
-            step_idxs,
-            signal_idxs,
-            token_latents_BTNL
+            step_BT,
+            sigma_BT,
+            z_BTNL
         )
         return pred_latents_BTNL, denoise_t
 
-    def target(self, z_BTNL: jax.Array, sigma_BT) -> jax.Array:
-        rng, _rng = jax.random.split(batch["rng"])
+    def target(self, z_BTNL: jax.Array, sigma_BT, *,
+               rngs: nnx.Rngs) -> jax.Array:
         zbar_BTNL = rngs.normal(z_BTNL.shape, dtype=z_BTNL.dtype)
-        batch['rng'] = _rng
 
-        noisy_latents_BTNL = (1.0 - sigma_BT)[..., None, None]*zbar_BTNL + sigma_BT[..., None, None]*token_latents_BTNL
+        noisy_latents_BTNL = (1.0 - sigma_BT)[..., None, None]*zbar_BTNL + sigma_BT[..., None, None]*z_BTNL
 
         return noisy_latents_BTNL
 
