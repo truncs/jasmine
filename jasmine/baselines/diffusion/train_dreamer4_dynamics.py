@@ -192,7 +192,7 @@ def shard_optimizer_states(
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
+def build_dataloader(args: Args, data_dir: str, num_epochs: Optional[int] = None) -> grain.DataLoaderIterator:
     image_shape = (args.image_height, args.image_width, args.image_channels)
     array_record_files = [
         os.path.join(data_dir, x)
@@ -206,13 +206,14 @@ def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
         # The dataloader shards the dataset across all processes
         args.batch_size,
         *image_shape,
-        num_workers=8,
-        prefetch_buffer_size=1,
+        num_workers=args.num_workers,
+        prefetch_buffer_size=args.prefetch_buffer_size,
         seed=args.seed,
+        num_epochs=num_epochs,
     )
-    initial_state = grain_dataloader._create_initial_state()
-    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
-    return grain_iterator
+    return grain_dataloader
+
+
 
 
 def build_checkpoint_manager(args: Args) -> Optional[ocp.CheckpointManager]:
@@ -669,8 +670,6 @@ def main(args: Args) -> None:
                 jax.make_array_from_process_local_data(
                     actions_sharding, elem["actions"]
                 )
-                if args.use_gt_actions
-                else None
             ),
         }
         for elem in train_iterator
@@ -686,8 +685,6 @@ def main(args: Args) -> None:
                     jax.make_array_from_process_local_data(
                         actions_sharding, elem["actions"]
                     )
-                    if args.use_gt_actions
-                    else None
                 ),
             }
             for elem in val_iterator
