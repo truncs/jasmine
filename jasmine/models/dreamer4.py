@@ -802,7 +802,7 @@ class Dynamics(nnx.Module):
         self.action_encoder = nnx.Linear(
             d_spatial,
             d_model,
-            use_bias,
+            use_bias=True,
             dtype=dtype,
             rngs=rngs
         )
