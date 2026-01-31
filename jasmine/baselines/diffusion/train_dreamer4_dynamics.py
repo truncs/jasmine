@@ -360,7 +360,12 @@ def _calculate_step_metrics(
 
 
 def main(args: Args) -> None:
-    jax.distributed.initialize()
+    jax.distributed.initialize(
+        coordinator_address="localhost:1234",
+        num_processes=1,
+        process_id=0
+    )
+
     num_devices = jax.device_count()
     if num_devices == 0:
         raise ValueError("No JAX devices found.")
