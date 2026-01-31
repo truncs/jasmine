@@ -628,7 +628,7 @@ class GenieDiffusion(nnx.Module):
         self.action_embed = ActionEncoder(
             d_model=latent_action_dim,
             n_keyboard=num_actions,
-            is_action_discrete=is_action_discrete,
+            is_discrete=is_action_discrete,
             rngs=rngs
         )
 
