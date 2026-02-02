@@ -899,42 +899,25 @@ def restore_genie_components(
         options=checkpoint_options,
         handler_registry=handler_registry,
     )
-    if tokenizer_type == "vqvae":
-        dummy_tokenizer = TokenizerVQVAE(
-            in_dim=args.image_channels,
-            model_dim=args.tokenizer_dim,
-            ffn_dim=args.tokenizer_ffn_dim,
-            latent_dim=args.latent_patch_dim,
-            num_latents=args.num_patch_latents,
-            patch_size=args.patch_size,
-            num_blocks=args.tokenizer_num_blocks,
-            num_heads=args.tokenizer_num_heads,
-            dropout=args.dropout,
-            codebook_dropout=args.dropout,
-            param_dtype=args.param_dtype,
-            dtype=args.dtype,
-            use_flash_attention=args.use_flash_attention,
-            rngs=rngs_tokenizer,
-        )
-    elif tokenizer_type == "mae":
-        dummy_tokenizer = TokenizerMAE(
-            in_dim=args.image_channels,
-            model_dim=args.tokenizer_dim,
-            ffn_dim=args.tokenizer_ffn_dim,
-            latent_dim=args.latent_patch_dim,
-            num_latents=args.num_patch_latents,
-            patch_size=args.patch_size,
-            num_blocks=args.tokenizer_num_blocks,
-            num_heads=args.tokenizer_num_heads,
-            dropout=args.dropout,
-            max_mask_ratio=0.0,
-            param_dtype=args.param_dtype,
-            dtype=args.dtype,
-            use_flash_attention=args.use_flash_attention,
-            rngs=rngs_tokenizer,
-        )
-    else:
-        raise ValueError(f"Invalid tokenizer type: {tokenizer_type}")
+
+    dummy_tokenizer = TokenizerMAE(
+        in_dim=args.image_channels,
+        image_height=args.image_height,
+        image_width=args.image_width,
+        model_dim=args.tokenizer_dim,
+        ffn_dim=args.tokenizer_ffn_dim,
+        latent_dim=args.latent_patch_dim,
+        num_latents=args.num_patch_latents,
+        patch_size=args.patch_size,
+        num_blocks=args.tokenizer_num_blocks,
+        num_heads=args.tokenizer_num_heads,
+        dropout=args.dropout,
+        max_mask_ratio=0.0,
+        param_dtype=args.param_dtype,
+        dtype=args.dtype,
+        use_flash_attention=args.use_flash_attention,
+        rngs=rngs_tokenizer,
+    )
 
     dummy_tokenizer_optimizer = nnx.ModelAndOptimizer(dummy_tokenizer, tx)
     dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
