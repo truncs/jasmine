@@ -9,7 +9,7 @@ import orbax.checkpoint as ocp
 from jasmine.models.dynamics import DynamicsMaskGIT, DynamicsCausal, DynamicsDiffusion
 from jasmine.models.lam import LatentActionModel
 from jasmine.models.tokenizer import TokenizerVQVAE, TokenizerMAE
-from jasmine.baselines.diffusion.train_tokenizer_mae import Dreamer4TokenizerMAE, build_model
+from jasmine.baselines.diffusion.train_tokenizer_mae import Dreamer4TokenizerMAE, build_model, Args
 from jasmine.models.dreamer4 import Dynamics, ActionEncoder
 
 
@@ -900,7 +900,12 @@ def restore_genie_components(
         handler_registry=handler_registry,
     )
 
-    dummy_tokenizer = build_model(args, rng)
+    tokenizer_args = Args()
+    tokenizer_args.image_height = args.image_height
+    tokenizer_args.image_width = args.image_width
+    tokenizer_args.max_mask_ratio = 0.0
+    
+    dummy_tokenizer = build_model(tokenizer_args, rng)
 
 
     dummy_tokenizer_optimizer = nnx.ModelAndOptimizer(dummy_tokenizer, tx)
