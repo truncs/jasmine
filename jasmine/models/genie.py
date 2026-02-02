@@ -905,7 +905,7 @@ def restore_genie_components(
     tokenizer_args.image_width = args.image_width
     tokenizer_args.max_mask_ratio = 0.0
     
-    dummy_tokenizer = build_model(tokenizer_args, rng)
+    dummy_tokenizer, rng = build_model(tokenizer_args, rng)
 
 
     dummy_tokenizer_optimizer = nnx.ModelAndOptimizer(dummy_tokenizer, tx)
@@ -919,7 +919,6 @@ def restore_genie_components(
             model_state=ocp.args.PyTreeRestore(  # type: ignore
                 abstract_sharded_tokenizer_optimizer_state  # type: ignore
             ),
-            partial_restore=True,
         ),
     )["model_state"]
     nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer.model)
