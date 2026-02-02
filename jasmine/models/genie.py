@@ -919,6 +919,7 @@ def restore_genie_components(
             model_state=ocp.args.PyTreeRestore(  # type: ignore
                 abstract_sharded_tokenizer_optimizer_state  # type: ignore
             ),
+            partial_restore=True,
         ),
     )["model_state"]
     nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer.model)
