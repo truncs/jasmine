@@ -508,7 +508,7 @@ def main(args: Args) -> None:
         # Corrupt Inputs
         z_BTNL = model.encode(inputs, rngs=rng)
         z_corrupt_BTNL = model.target(z_BTNL,
-                                      sigma_BT=sigma_idx_full, rngs=rng)
+                                      sigma_BT=sigma_idx_full, rngs=rngs)
 
         # Call bootstrap dynamics
         pred_full_BTNL = model.dyn(z_corrupt_BTNL, actions, step_idx_full, sigma_idx_full)
