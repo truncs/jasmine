@@ -482,7 +482,7 @@ def main(args: Args) -> None:
 
         rng, key_step_self = jax.random.split(inputs['rng'])
 
-        emax = jnp.log2(args.k_max).astype(jnp.int32)
+        emax = jnp.log2(k_max).astype(jnp.int32)
         step_idx_emp = jnp.full((B_emp, T), emax, dtype=jnp.int32)
         d_self, step_idx_self = _sample_step_excluding_dmin(key_step_self, (B_self, T), k_max)
         step_idx_full = jnp.concatenate([step_idx_emp, step_idx_self], axis=0)   # (B,T)
