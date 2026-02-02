@@ -545,7 +545,7 @@ def main(args: Args) -> None:
         loss_self, boot_mse = jax.lax.cond(
             do_boot,
             _boot_loss,
-            lambda: (jnp.array(0.0, dtype=z_BTNL.dtype), jnp.array(0.0, dtype=z_BTNL.dtype)),
+            lambda: (jnp.array(0.0, dtype=jnp.float32), jnp.array(0.0, dtype=jnp.float32)),
         )
 
         # Combine (row-weighted by nominal B parts; denominator B keeps scale
