@@ -506,7 +506,7 @@ def main(args: Args) -> None:
         sigma_idx_plus = sigma_idx_self + (k_max * d_half).astype(jnp.int32)
 
         # Corrupt Inputs
-        z_BTNL = model.encode(inputs, rngs=rng)
+        z_BTNL = model.encode(inputs, rngs=rngs)
         z_corrupt_BTNL = model.target(z_BTNL,
                                       sigma_BT=sigma_idx_full, rngs=rngs)
 
