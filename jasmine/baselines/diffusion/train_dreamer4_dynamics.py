@@ -511,7 +511,7 @@ def main(args: Args) -> None:
                                       sigma_BT=sigma_idx_full, rngs=rngs)
 
         # Call bootstrap dynamics
-        pred_full_BTNL = model.dyn(z_corrupt_BTNL, actions, step_idx_full, sigma_idx_full)
+        pred_full_BTNL, _ = model.dyn(z_corrupt_BTNL, actions, step_idx_full, sigma_idx_full)
         pred_emp_BTNL = pred_full_BTNL[:B_emp]
         pred_self_BTNL = pred_full_BTNL[B_emp:]
 
@@ -524,7 +524,7 @@ def main(args: Args) -> None:
         def _boot_loss():
             z_corrupt_self_BTNL = z_corrupt_BTNL[B_emp:]
             actions_self = actions[B_emp:]
-            pred_half1_BTNL = model.dyn(
+            pred_half1_BTNL, _ = model.dyn(
                 z_corrupt_self_BTNL,
                 actions_self,
                 step_idx_half,
@@ -534,7 +534,7 @@ def main(args: Args) -> None:
             b_prime = ((pred_half1_BTNL - z_corrupt_self_BTNL) /
                        (1.0 - sigma_self)[..., None, None])
             z_prime_BTNL = z_corrupt_self_BTNL + b_prime * d_half[..., None, None]
-            pred_half2_BTNL = model.dyn(z_prime_BTNL, actions_self, step_idx_half, sigma_idx_plus)
+            pred_half2_BTNL, _ = model.dyn(z_prime_BTNL, actions_self, step_idx_half, sigma_idx_plus)
             b_doubleprime = (pred_half2_BTNL - z_prime_BTNL) / (1.0 - sigma_plus)[...,None, None]
             vhat_sigma = (pred_self_BTNL - z_corrupt_self_BTNL) / (1.0 - sigma_self)[...,None, None]
             vbar_target = jax.lax.stop_gradient((b_prime + b_doubleprime) / 2.0)
