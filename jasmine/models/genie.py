@@ -690,7 +690,7 @@ class GenieDiffusion(nnx.Module):
     def dyn(self, z_BTNL: jax.Array, actions: jax.Array, step_BT, sigma_BT) -> jax.Array:
 
         action_embeddings_BT1L = self.action_embed(actions).reshape(
-            actions.shape[:2], 1, self.latent_action_dim
+            actions.shape[2], 1, self.latent_action_dim
         )
 
         pred_latents_BTNL, denoise_t = self.dynamics(
