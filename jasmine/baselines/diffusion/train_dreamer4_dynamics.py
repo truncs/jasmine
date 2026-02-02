@@ -480,7 +480,7 @@ def main(args: Args) -> None:
         B_emp = B - B_self
         actions = inputs['actions']
 
-        rng, key_step_self = jax.random_split(inputs['rng'])
+        rng, key_step_self = jax.random.split(inputs['rng'])
 
         emax = jnp.log2(args.k_max).astype(jnp.int32)
         step_idx_emp = jnp.full((B_emp, T), emax, dtype=jnp.int32)
