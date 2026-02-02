@@ -684,7 +684,7 @@ class GenieDiffusion(nnx.Module):
 
         videos_BTHWC = batch["videos"]
         tokenizer_outputs = self.tokenizer.mask_and_encode(
-            videos_BTHWC, rngs, training=False
+            videos_BTHWC, training=False, rngs=rngs,
         )
         return tokenizer_outputs['z']
 
