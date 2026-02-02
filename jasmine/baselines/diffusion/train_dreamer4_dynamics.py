@@ -76,6 +76,8 @@ class Args:
     dyna_num_heads: int = 8
     dyna_num_registers: int = 4
     dyna_num_agents: int = 1
+    dyna_bootstrap_fraction: float = 0.0
+    dyna_batch_bootstrap_start_step: int = 5000
     dyna_kmax: int = 8
     dropout: float = 0.0
     diffusion_denoise_steps: int = 0
@@ -472,8 +474,8 @@ def main(args: Args) -> None:
         B, T = inputs['videos'].shape[:2]
 
         k_max = args.dyna_kmax
-        B_self = args.batch_bootstrap
-        bootstrap_start = args.bootstrap_start
+        B_self = max(0, int(round(args.dyna_bootstrap_fraction * B)))
+        bootstrap_start = args.dyna_batch_bootstrap_start_step
 
         B_emp = B - B_self
         actions = inputs['actions']
