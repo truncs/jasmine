@@ -682,9 +682,8 @@ class GenieDiffusion(nnx.Module):
     def encode(self, batch: Dict[str, jax.Array], *,
                rngs: nnx.Rngs) -> Dict[str, jax.Array]:
 
-        videos_BTHWC = batch["videos"]
         tokenizer_outputs = self.tokenizer.mask_and_encode(
-            videos_BTHWC, training=False, rngs=rngs,
+            batch, training=False, rngs=rngs,
         )
         return tokenizer_outputs['z']
 
