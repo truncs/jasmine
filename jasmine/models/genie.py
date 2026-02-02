@@ -900,7 +900,7 @@ def restore_genie_components(
         handler_registry=handler_registry,
     )
 
-    dummy_tokenizer = TokenizerMAE(
+    dummy_tokenizer = Dreamer4TokenizerMAE(
         in_dim=args.image_channels,
         image_height=args.image_height,
         image_width=args.image_width,
@@ -935,47 +935,6 @@ def restore_genie_components(
     nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer.model)
     model.tokenizer = dummy_tokenizer_optimizer.model
     tokenizer_checkpoint_manager.close()
-
-    if args.lam_checkpoint:
-        lam_checkpoint_manager = ocp.CheckpointManager(
-            directory=args.lam_checkpoint,
-            options=checkpoint_options,
-            handler_registry=handler_registry,
-        )
-        dummy_lam = LatentActionModel(
-            in_dim=args.image_channels,
-            model_dim=args.lam_dim,
-            ffn_dim=args.lam_ffn_dim,
-            latent_dim=args.latent_patch_dim,
-            num_latents=args.num_actions,
-            patch_size=args.lam_patch_size,
-            num_blocks=args.lam_num_blocks,
-            num_heads=args.lam_num_heads,
-            dropout=args.dropout,
-            codebook_dropout=args.dropout,
-            param_dtype=args.param_dtype,
-            dtype=args.dtype,
-            use_flash_attention=args.use_flash_attention,
-            rngs=rngs_lam,
-        )
-        dummy_lam_optimizer = nnx.ModelAndOptimizer(dummy_lam, tx)
-        dummy_lam_optimizer_state = nnx.state(dummy_lam_optimizer)
-        abstract_sharded_lam_optimizer_state = _create_abstract_sharded_pytree(
-            dummy_lam_optimizer_state, sharding
-        )
-        restored_lam_optimizer = lam_checkpoint_manager.restore(
-            step=lam_checkpoint_manager.latest_step(),
-            args=ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(  # type: ignore
-                    abstract_sharded_lam_optimizer_state  # type: ignore
-                ),
-            ),
-        )["model_state"]
-        nnx.update(dummy_lam_optimizer.model, restored_lam_optimizer.model)
-        model.lam = dummy_lam_optimizer.model
-        # Remove the LAM decoder to save memory and avoid unnecessary computation.
-        del model.lam.decoder
-        lam_checkpoint_manager.close()
 
     # Reinitialize the optimizer states
     optimizer = nnx.ModelAndOptimizer(model, tx)
