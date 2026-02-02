@@ -347,7 +347,7 @@ def _calculate_step_metrics(
             ramp_weight = 0.9 * outputs["signal_level"] + 0.1
             loss = jnp.mean(mse_BT * ramp_weight)
         else:
-            loss = mse
+            lposs = mse
 
     if "lam_indices" in outputs.keys():
         _, index_counts_lam = jnp.unique_counts(
@@ -471,7 +471,7 @@ def main(args: Args) -> None:
 
         B, T = inputs['videos'].shape[:2]
 
-        k_max = args.k_max
+        k_max = args.dyna_kmax
         B_self = args.batch_bootstrap
         bootstrap_start = args.bootstrap_start
 
