@@ -448,6 +448,7 @@ def main(args: Args) -> None:
     def dynamics_loss_fn(
         model: GenieDiffusion,
         inputs: dict,
+        rngs: nnx.Rngs,
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
@@ -505,8 +506,8 @@ def main(args: Args) -> None:
         sigma_idx_plus = sigma_idx_self + (k_max * d_half).astype(jnp.int32)
 
         # Corrupt Inputs
-        z_BTNL = model.encode(inputs)
-        z_corrupt_BTNL = model.target(z_BTNL)
+        z_BTNL = model.encode(inputs, rngs=rng)
+        z_corrupt_BTNL = model.target(z_BTNL, rngs=rng)
 
         # Call bootstrap dynamics
         pred_full_BTNL = model.dyn(z_corrupt_BTNL, actions, step_idx_full, sigma_idx_full)
@@ -559,11 +560,11 @@ def main(args: Args) -> None:
 
     @nnx.jit(donate_argnums=0)
     def train_step(
-        optimizer: nnx.ModelAndOptimizer, inputs: dict
+        optimizer: nnx.ModelAndOptimizer, inputs: dict, rngs: nnx.Rngs,
     ) -> tuple[jax.Array, jax.Array, dict]:
         def loss_fn(model: GenieDiffusion) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             model.train()
-            return dynamics_loss_fn(model, inputs)
+            return dynamics_loss_fn(model, inputs, rngs)
 
         (loss, (metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
             optimizer.model
@@ -696,7 +697,7 @@ def main(args: Args) -> None:
     if jax.process_index() == 0:
         first_batch = next(dataloader_train)
         first_batch["rng"] = rng  # type: ignore
-        compiled = train_step.lower(optimizer, first_batch).compile()
+        compiled = train_step.lower(optimizer, first_batch, rng).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
         # Do not skip the first batch during training
@@ -708,7 +709,7 @@ def main(args: Args) -> None:
             # --- Train step ---
             rng, _rng_mask = jax.random.split(rng, 2)
             batch["rng"] = _rng_mask
-            loss, metrics = train_step(optimizer, batch)
+            loss, metrics = train_step(optimizer, batch, rng)
             if step == first_step:
                 print_mem_stats("After params initialized")
             step += 1
