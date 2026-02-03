@@ -505,7 +505,6 @@ class BlockCausalTransformer(nnx.Module):
         return x
 
 
-
 class Encoder(nnx.Module):
     def __init__(
         self,
