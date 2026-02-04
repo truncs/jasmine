@@ -78,7 +78,7 @@ class Args:
     dyna_num_agents: int = 1
     dyna_bootstrap_fraction: float = 0.0
     dyna_batch_bootstrap_start_step: int = 5000
-    dyna_kmax: int = 8
+    dyna_kmax: int = 128
     dropout: float = 0.0
     diffusion_denoise_steps: int = 0
     diffusion_use_ramp_weight: bool = True
@@ -508,7 +508,7 @@ def main(args: Args) -> None:
         # Corrupt Inputs
         z_BTNL = model.encode(inputs, rngs=rngs)
         z_corrupt_BTNL = model.target(z_BTNL,
-                                      sigma_BT=sigma_idx_full, rngs=rngs)
+                                      sigma_BT=sigma_full, rngs=rngs)
 
         # Call bootstrap dynamics
         pred_full_BTNL, _ = model.dyn(z_corrupt_BTNL, actions, step_idx_full, sigma_idx_full)
