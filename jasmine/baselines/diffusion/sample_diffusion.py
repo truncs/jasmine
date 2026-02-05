@@ -200,9 +200,6 @@ if __name__ == "__main__":
     batch["videos"] = gt_video.astype(args.dtype)
     # Get latent actions for all videos in the batch
     action_batch_E = None
-    if not args.use_gt_actions:
-        action_batch_E = genie.vq_encode(batch, training=False)
-        batch["latent_actions"] = action_batch_E
 
     # --- Sample + evaluate video ---
     recon_video_BSHWC = _autoreg_sample(genie, rng, batch)
