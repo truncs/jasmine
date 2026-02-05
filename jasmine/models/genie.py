@@ -1,3 +1,4 @@
+import math
 from typing import Dict
 
 import einops
@@ -584,6 +585,9 @@ class GenieDiffusion(nnx.Module):
         self.dropout = dropout
         self.diffusion_denoise_steps = diffusion_denoise_steps
         self.decode = decode
+        self.rngs = rngs
+
+        self.dtype = dtype
 
         num_patches = (image_height // patch_size) * (image_width // patch_size)
 
@@ -709,11 +713,20 @@ class GenieDiffusion(nnx.Module):
 
         return noisy_latents_BTNL
 
+    def _make_tau_schedule(self, d):
+        inv = int(round(1.0/float(d)))
+        K = inv
+        scale = self.dyna_kmax // K
+        tau = [i/K for i in range(K)] + [1.0]
+        tau_idx = [i*scale for i in range(K)] + [self.dyna_kmax]
+        dt = 1.0 / K
+        return jnp.Array(tau), jnp.Array(tau_idx), dt
+
     def sample(
         self,
         batch: Dict[str, jax.Array],
-        seq_len: int,
-        diffusion_steps: int = 64,
+        context_len: int,
+        diffusion_steps: int = 4,
         diffusion_corrupt_context_factor: float = 0.1,
     ) -> jax.Array:
         """
@@ -721,7 +734,8 @@ class GenieDiffusion(nnx.Module):
 
         - Input frames are tokenized once.
         - Future frames are generated autoregressively in latent space.
-        - The context frames are corrupted by noise like in Dreamer 4 section 3.2.
+        - The context frames are corrupted by noise like in Dreamer4
+          section 3.2.
         - All frames are decoded in a single pass.
 
         Dimension keys:
@@ -743,126 +757,96 @@ class GenieDiffusion(nnx.Module):
         )
         token_latents_BTNL = tokenizer_outputs["z"]
         B, T, N, L = token_latents_BTNL.shape
-        pad_shape = (B, seq_len - T, N, L)
-        pad = jax.random.normal(_rng_noise_full, pad_shape)
-        token_latents_BSNL = jnp.concatenate([token_latents_BTNL, pad], axis=1)
+
+        context_len = min(T-1, context_len)
+
         dynamics_state = nnx.state(self.dynamics)
 
         assert self.action_embed is not None
         latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
             *batch["actions"].shape[:2], 1, self.latent_action_dim
         )
-        latent_actions_BTm11L = latent_actions_BT1L[:, :-1]
-        action_tokens_EL = latent_actions_BTm11L.reshape(-1, self.latent_action_dim)
 
-        ctx_signal_level = 1 - diffusion_corrupt_context_factor
-        ctx_signal_level = jnp.argmin(
-            jnp.abs(jnp.arange(diffusion_steps) / diffusion_steps - ctx_signal_level)
-        )
-        ctx_signal_level = ctx_signal_level / diffusion_steps
+        tau, tau_idx, dt = self._make_tau_schedule(1.0/diffusion_steps)
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
-        def denoise_step_fn(
-            carry: tuple[jax.Array, jax.Array, jax.Array], denoise_step: jax.Array
-        ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            latents_BSNL, frame_idx, rng = carry
-            rng, _rng_noise_context = jax.random.split(rng)
+        def denoise_step_fn(carry: tuple[jax.Array, jax.Array, jax.Array],
+                            tau_param: tuple[jax.Array, jax.Array]):
+            z_BPNL, latent_actions_BP1L, frame_idx = carry
 
-            # We need to reconstruct the submodule inside scan body to prevent trace context mismatches
-            dynamics_diffusion = DynamicsDiffusion(
-                model_dim=self.dyna_dim,
-                ffn_dim=self.dyna_ffn_dim,
-                latent_patch_dim=self.latent_patch_dim,
-                latent_action_dim=self.latent_action_dim,
-                num_blocks=self.dyna_num_blocks,
-                num_heads=self.dyna_num_heads,
-                denoise_steps=self.diffusion_denoise_steps,
+            step_tau, step_tau_idx = tau_param
+
+            dynamics = Dynamics(
+                d_model=self.dyna_dim,
+                d_bottleneck=self.latent_patch_dim,
+                d_spatial=self.latent_patch_dim,
+                n_spatial=self.num_patch_latents,
+                n_register=self.dyna_num_registers,
+                n_agent=self.dyna_num_agents,
+                n_heads=self.dyna_num_heads,
+                depth=self.dyna_num_blocks,
+                k_max=self.dyna_kmax,
                 dropout=self.dropout,
-                param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
-                rngs=nnx.Rngs(0),
-                decode=self.decode,
-            )
-            nnx.update(dynamics_diffusion, dynamics_state)
-
-            # corrupt the context frames like in Dreamer 4 section 3.2
-            denoise_step_BS = (
-                jnp.ones((B, seq_len), dtype=jnp.int32) * diffusion_steps - 1
-            )
-            denoise_step_BS = denoise_step_BS.at[:, frame_idx].set(denoise_step)
-
-            noise_context_BSNL = jax.random.normal(
-                _rng_noise_context, (B, seq_len, N, L)
-            )
-            corrupted_latents_BSNL = (
-                latents_BSNL * ctx_signal_level
-                + (1 - ctx_signal_level) * noise_context_BSNL
-            )
-            frame_mask = jnp.arange(seq_len) < frame_idx
-            frame_mask_1S11 = frame_mask.reshape(1, seq_len, 1, 1)
-            corrupted_tok_latents_BSNL = jnp.where(
-                frame_mask_1S11, corrupted_latents_BSNL, latents_BSNL
+                rngs=self.rngs,
             )
 
-            # --- Predict transition ---
-            action_tokens_BSm11L = jnp.reshape(
-                action_tokens_EL, (B, seq_len - 1, 1, -1)
-            )
-            act_embed_BSm11L = self.dynamics.action_up(action_tokens_BSm11L)
-            act_embed_BS1L = jnp.pad(act_embed_BSm11L, ((0, 0), (1, 0), (0, 0), (0, 0)))
+            nnx.update(dynamics, dynamics_state)
 
-            denoise_step_embed_BS1L = self.dynamics.timestep_embed(
-                denoise_step_BS
-            ).reshape(B, seq_len, 1, self.latent_patch_dim)
+            emax = int(round(math.log2(self.dyna_kmax)))
+            step_idxs = jnp.full(*z_BPNL.shape[:2], emax)
+            step_id_BT = step_idxs.at[:, -1].set(
+                int(round(math.log2(diffusion_steps))))
 
-            inputs_BSNp2L = jnp.concatenate(
-                [act_embed_BS1L, denoise_step_embed_BS1L, corrupted_tok_latents_BSNL],
-                axis=2,
-            )
-            pred_latents_BSNp2L = dynamics_diffusion.diffusion_transformer(
-                inputs_BSNp2L,
-            )
-            pred_latents_BSNL = pred_latents_BSNp2L[:, :, 2:]
-            latents_BSNL = latents_BSNL.at[:, frame_idx].set(
-                pred_latents_BSNL[:, frame_idx]
-            )
-            new_carry = (latents_BSNL, frame_idx, rng)
+            signal_id_BT = jnp.full(*z_BPNL.shape[:2], self.dyna_kmax - 1)
+            signal_id_BT = signal_id_BT.at[:, -1].set(step_tau_idx)
+
+            pred_BTNL, _ = dynamics(latent_actions_BP1L, step_id_BT,
+                                    signal_id_BT, z_BPNL)
+            z_cur_B1NL = z_BPNL[:, -1:, :, :]
+            pred_cur_B1NL = pred_BTNL[:, -1:, :, :]
+
+            denom = max(1e-4, 1.0 - step_tau)
+            b = (z_cur_B1NL.float() - pred_cur_B1NL.float()) / denom
+            z_cur_B1NL = (z_cur_B1NL.float() + b*dt).to(self.dtype)
+            z_BTNL = z_BPNL.at[:, -1, :, :].set(z_cur_B1NL)
+            new_carry = (z_BTNL, latent_actions_BP1L)
             return new_carry
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
-        def autoregressive_step_fn(
-            carry: tuple[jax.Array, jax.Array], frame_index: jax.Array
-        ) -> tuple[jax.Array, jax.Array]:
+        def autoregressive_step_fn(carry: tuple[jax.Array, jax.Array],
+                                   frame_index: jax.Array):
             latents_BSNL, rng = carry
             rng, _rng_noise_context = jax.random.split(rng)
 
-            carry_denoise = (latents_BSNL, frame_index, _rng_noise_context)
+            token_B1NL = jax.random.normal(_rng_noise_context, (B, 1, N, L))
+            latents_BSNL = jnp.concatentate([latents_BSNL, token_B1NL], axis=1)
+            actions_BP1L = latent_actions_BT1L[:, frame_index+1]
+
+            carry_denoise = (latents_BSNL, actions_BP1L, frame_index)
+
             final_carry_denoise = denoise_step_fn(
-                carry_denoise, jnp.arange(diffusion_steps)
-            )
+                carry_denoise, (tau, tau_idx))
+
             latents_BSNL = final_carry_denoise[0]
+
             new_carry = (latents_BSNL, rng)
             return new_carry
 
         rng, _rng_sample = jax.random.split(rng)
+
+        token_latents_BSNL = token_latents_BTNL[:, :context_len]
+
         initial_carry = (token_latents_BSNL, _rng_sample)
-        final_carry = autoregressive_step_fn(initial_carry, jnp.arange(T, seq_len))
+        final_carry = autoregressive_step_fn(
+            initial_carry, jnp.arange(context_len, T))
         final_latents_BSNL = final_carry[0]
 
-        final_videos_BSHWC = self.tokenizer.decode(final_latents_BSNL, video_hw=(H, W))
+        final_videos_BSHWC = self.tokenizer.decode(
+            final_latents_BSNL, video_hw=(H, W))
 
         return final_videos_BSHWC
-
-    def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
-        # --- Preprocess videos ---
-        assert self.lam is not None
-        video_BTHWC = batch["videos"]
-        lam_output: Dict[str, jax.Array] = self.lam.vq_encode(
-            video_BTHWC, training=training
-        )
-        lam_indices_E = lam_output["indices"]
-        return lam_indices_E
 
 
 # FIXME (f.srambical): add conversion script for old checkpoints
@@ -882,7 +866,8 @@ def restore_genie_components(
     model = optimizer.model
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
-        "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
+        "model_state", ocp.args.PyTreeRestore,
+        ocp.handlers.PyTreeCheckpointHandler
     )
 
     checkpoint_options = ocp.CheckpointManagerOptions(
@@ -898,9 +883,8 @@ def restore_genie_components(
     tokenizer_args.image_height = args.image_height
     tokenizer_args.image_width = args.image_width
     tokenizer_args.max_mask_ratio = 0.0
-    
-    dummy_tokenizer, rng = build_model(tokenizer_args, rng)
 
+    dummy_tokenizer, rng = build_model(tokenizer_args, rng)
 
     dummy_tokenizer_optimizer = nnx.ModelAndOptimizer(dummy_tokenizer, tx)
     dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
