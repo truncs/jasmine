@@ -51,6 +51,13 @@ class Args:
     dyna_ffn_dim: int = 2048
     dyna_num_blocks: int = 8
     dyna_num_heads: int = 8
+    dyna_num_registers: int = 4
+    dyna_num_agents: int = 1
+    dyna_bootstrap_fraction: float = 0.0
+    dyna_batch_bootstrap_start_step: int = 5000
+    dyna_kmax: int = 128
+    dropout: float = 0.0
+    # General parameters
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
     use_flash_attention: bool = True
@@ -78,6 +85,9 @@ if __name__ == "__main__":
     genie = GenieDiffusion(
         # Tokenizer
         in_dim=args.image_channels,
+        image_height=args.image_height,
+        image_width=args.image_width,
+        image_channels=args.image_channels,
         tokenizer_dim=args.tokenizer_dim,
         tokenizer_ffn_dim=args.tokenizer_ffn_dim,
         latent_patch_dim=args.latent_patch_dim,
@@ -85,26 +95,23 @@ if __name__ == "__main__":
         patch_size=args.patch_size,
         tokenizer_num_blocks=args.tokenizer_num_blocks,
         tokenizer_num_heads=args.tokenizer_num_heads,
-        # LAM
-        lam_dim=args.lam_dim,
-        lam_ffn_dim=args.lam_ffn_dim,
+        # Action
+        is_action_discrete=args.is_action_discrete,
         latent_action_dim=args.latent_action_dim,
         num_actions=args.num_actions,
-        lam_patch_size=args.lam_patch_size,
-        lam_num_blocks=args.lam_num_blocks,
-        lam_num_heads=args.lam_num_heads,
-        lam_co_train=False,
-        use_gt_actions=args.use_gt_actions,
         # Dynamics
         dyna_dim=args.dyna_dim,
         dyna_ffn_dim=args.dyna_ffn_dim,
         dyna_num_blocks=args.dyna_num_blocks,
         dyna_num_heads=args.dyna_num_heads,
+        dyna_num_agents=args.dyna_num_agents,
+        dyna_num_registers=args.dyna_num_registers,
+        dyna_kmax=args.dyna_kmax,
+        dropout=args.dropout,
+        diffusion_denoise_steps=args.diffusion_denoise_steps,
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
-        diffusion_denoise_steps=args.diffusion_denoise_steps,
-        # FIXME (f.srambical): implement spatiotemporal KV caching and set decode=True
         decode=False,
         rngs=rngs,
     )
