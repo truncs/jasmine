@@ -47,7 +47,7 @@ class Args:
     num_actions: int = 2
     is_action_discrete: bool = False
     # Dynamics checkpoint
-    dyna_dim: int = 128
+    dyna_dim: int = 512
     dyna_ffn_dim: int = 2048
     dyna_num_blocks: int = 8
     dyna_num_heads: int = 8
