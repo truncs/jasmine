@@ -801,6 +801,8 @@ class GenieDiffusion(nnx.Module):
             signal_id_BT = jnp.full(z_BPNL.shape[:2], self.dyna_kmax - 1)
             signal_id_BT = signal_id_BT.at[:, -1].set(step_tau_idx)
 
+            latent_actions_BP1L = latent_actions_BT1L.at[:, :frame_idx+1]
+
             pred_BTNL, _ = dynamics(latent_actions_BP1L, step_id_BT,
                                     signal_id_BT, z_BPNL)
             z_cur_B1NL = z_BPNL[:, -1:, :, :]
@@ -814,23 +816,22 @@ class GenieDiffusion(nnx.Module):
             return new_carry
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
-        def autoregressive_step_fn(carry: tuple[jax.Array, jax.Array, jax.Array],
+        def autoregressive_step_fn(carry: tuple[jax.Array, jax.Array],
                                    frame_index: jax.Array):
             latents_BSNL, latent_actions_BT1L, rng = carry
             rng, _rng_noise_context = jax.random.split(rng)
 
             token_B1NL = jax.random.normal(_rng_noise_context, (B, 1, N, L))
             latents_BSNL = jnp.concatenate([latents_BSNL, token_B1NL], axis=1)
-            actions_BP1L = latent_actions_BT1L[:, :frame_index+1]
 
-            carry_denoise = (latents_BSNL, actions_BP1L, frame_index)
+            carry_denoise = (latents_BSNL, frame_index)
 
             final_carry_denoise = denoise_step_fn(
                 carry_denoise, (tau, tau_idx))
 
             latents_BSNL = final_carry_denoise[0]
 
-            new_carry = (latents_BSNL, latent_actions_BT1L, rng)
+            new_carry = (latents_BSNL, rng)
             return new_carry
 
         rng, _rng_sample = jax.random.split(rng)
