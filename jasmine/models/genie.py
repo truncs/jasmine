@@ -747,7 +747,6 @@ class GenieDiffusion(nnx.Module):
             H: height
             W: width
         """
-        assert isinstance(self.dynamics, DynamicsDiffusion)
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
         H, W = videos_BTHWC.shape[2:4]
