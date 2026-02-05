@@ -211,8 +211,8 @@ class SpaceSelfAttentionModality(nnx.Module):
         S = int(self.modality_ids.shape[0])
 
         # Broadcast helpers
-        q_idx = jnp.arange(S)[:, None]       # (S,1)
-        k_idx = jnp.arange(S)[None, :]       # (1,S)
+        q_idx = np.arange(S)[:, None]       # (S,1)
+        k_idx = np.arange(S)[None, :]       # (1,S)
 
         is_q_lat = q_idx < self.n_latents     # (S,1) bool
         is_k_lat = k_idx < self.n_latents     # (1,S) bool
@@ -223,18 +223,18 @@ class SpaceSelfAttentionModality(nnx.Module):
 
         if self.mode == "encoder":
             # latents -> all; non-latents -> same modality only (no access to latents unless same modality==latent, which they aren't)
-            allow_lat_q = jnp.ones((S, S), dtype=bool)             # lat q attends to everything
+            allow_lat_q = np.ones((S, S), dtype=bool)             # lat q attends to everything
             allow_nonlat_q = same_mod                              # non-lat q attends within itself only
-            mask = jnp.where(is_q_lat, allow_lat_q, allow_nonlat_q)
+            mask = np.where(is_q_lat, allow_lat_q, allow_nonlat_q)
         elif self.mode == "decoder":
             # latents -> latents only; non-latents -> same modality OR latents
             allow_lat_q = is_k_lat                                  # lat q -> lat k only
-            allow_nonlat_q = jnp.logical_or(same_mod, is_k_lat)     # non-lat q -> same mod + latents
-            mask = jnp.where(is_q_lat, allow_lat_q, allow_nonlat_q)
+            allow_nonlat_q = np.logical_or(same_mod, is_k_lat)     # non-lat q -> same mod + latents
+            mask = np.where(is_q_lat, allow_lat_q, allow_nonlat_q)
         elif self.mode in ["wm_agent", "wm_agent_isolated"]:
             S = int(self.modality_ids.shape[0])
-            q_idx = jnp.arange(S)[:, None]   # (S,1)
-            k_idx = jnp.arange(S)[None, :]   # (1,S)
+            q_idx = np.arange(S)[:, None]   # (S,1)
+            k_idx = np.arange(S)[None, :]   # (1,S)
             q_mod = self.modality_ids[q_idx] # (S,1)
             k_mod = self.modality_ids[k_idx] # (1,S)
 
@@ -260,10 +260,10 @@ class SpaceSelfAttentionModality(nnx.Module):
             # Agent queries:
             #  - wm_agent: agent reads all (obs ∪ action ∪ agent)
             #  - wm_agent_isolated: agent reads nobody
-            allow_for_agent_q = jnp.where(
+            allow_for_agent_q = np.where(
                 self.mode == "wm_agent",
-                jnp.ones((S, S), dtype=bool),
-                jnp.zeros((S, S), dtype=bool)
+                np.ones((S, S), dtype=bool),
+                np.zeros((S, S), dtype=bool)
             )
 
             # Non-agent queries (route by query modality)
@@ -271,15 +271,15 @@ class SpaceSelfAttentionModality(nnx.Module):
             allow_for_obs_q    = (is_obs_k | is_action_k)                     # obs -> obs ∪ action    (1,S)
 
             # Build per-query row permissions with broadcasting from (1,S) to (S,S)
-            allow_nonagent = jnp.where(
+            allow_nonagent = np.where(
                 is_action_q, allow_for_action_q,
-                jnp.where(is_obs_q, allow_for_obs_q, jnp.zeros((S, S), dtype=bool))
+                np.where(is_obs_q, allow_for_obs_q, np.zeros((S, S), dtype=bool))
             )
 
             # Nobody can read agent keys except agent q
-            allow_nonagent = jnp.where(is_agent_k, False, allow_nonagent)
+            allow_nonagent = np.where(is_agent_k, False, allow_nonagent)
 
-            mask = jnp.where(is_agent_q, allow_for_agent_q, allow_nonagent)
+            mask = np.where(is_agent_q, allow_for_agent_q, allow_nonagent)
         else:
             raise ValueError(f"Unknown mode {self.mode}")
 
