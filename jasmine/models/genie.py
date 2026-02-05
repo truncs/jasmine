@@ -752,7 +752,7 @@ class GenieDiffusion(nnx.Module):
         H, W = videos_BTHWC.shape[2:4]
         rng, _rng_mask, _rng_noise_full = jax.random.split(batch["rng"], 3)
         tokenizer_outputs = self.tokenizer.mask_and_encode(
-            videos_BTHWC, training=False, rngs=_rng_mask
+            batch, training=False, rngs=_rng_mask
         )
         token_latents_BTNL = tokenizer_outputs["z"]
         B, T, N, L = token_latents_BTNL.shape
