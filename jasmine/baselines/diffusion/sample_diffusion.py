@@ -76,7 +76,11 @@ if __name__ == "__main__":
         W: width
         E: B * (S - 1)
     """
-    jax.distributed.initialize()
+    jax.distributed.initialize(
+        coordinator_address="localhost:1234",
+        num_processes=1,
+        process_id=0
+    )
 
     rng = jax.random.key(args.seed)
 
