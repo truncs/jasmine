@@ -769,9 +769,9 @@ class GenieDiffusion(nnx.Module):
         tau, tau_idx, dt = self._make_tau_schedule(1.0/diffusion_steps)
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
-        def denoise_step_fn(carry: tuple[jax.Array, jax.Array, jax.Array],
+        def denoise_step_fn(carry: tuple[jax.Array, jax.Array],
                             tau_param: tuple[jax.Array, jax.Array]):
-            z_BPNL, latent_actions_BP1L, frame_idx = carry
+            z_BPNL, frame_idx = carry
 
             step_tau, step_tau_idx = tau_param
 
@@ -812,7 +812,7 @@ class GenieDiffusion(nnx.Module):
             b = (z_cur_B1NL.float() - pred_cur_B1NL.float()) / denom
             z_cur_B1NL = (z_cur_B1NL.float() + b*dt).to(self.dtype)
             z_BTNL = z_BPNL.at[:, -1, :, :].set(z_cur_B1NL)
-            new_carry = (z_BTNL, latent_actions_BP1L)
+            new_carry = (z_BTNL, frame_idx)
             return new_carry
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
