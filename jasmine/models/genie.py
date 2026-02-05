@@ -720,7 +720,7 @@ class GenieDiffusion(nnx.Module):
         tau = [i/K for i in range(K)] + [1.0]
         tau_idx = [i*scale for i in range(K)] + [self.dyna_kmax]
         dt = 1.0 / K
-        return jnp.Array(tau), jnp.Array(tau_idx), dt
+        return jax.Array(tau), jax.Array(tau_idx), dt
 
     def sample(
         self,
