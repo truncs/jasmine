@@ -150,7 +150,8 @@ if __name__ == "__main__":
     restored = checkpoint_manager.restore(
         checkpoint_manager.latest_step(),
         args=ocp.args.Composite(
-            model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+            model_state=ocp.args.PyTreeRestore(
+                abstract_optimizer_state, partial_restore=True),  # type: ignore
         ),
     )
     restored_optimizer_state = restored["model_state"]
