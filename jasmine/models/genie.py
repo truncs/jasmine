@@ -794,11 +794,11 @@ class GenieDiffusion(nnx.Module):
             nnx.update(dynamics, dynamics_state)
 
             emax = int(round(math.log2(self.dyna_kmax)))
-            step_idxs = jnp.full(*z_BPNL.shape[:2], emax)
+            step_idxs = jnp.full(z_BPNL.shape[:2], emax)
             step_id_BT = step_idxs.at[:, -1].set(
                 int(round(math.log2(diffusion_steps))))
 
-            signal_id_BT = jnp.full(*z_BPNL.shape[:2], self.dyna_kmax - 1)
+            signal_id_BT = jnp.full(z_BPNL.shape[:2], self.dyna_kmax - 1)
             signal_id_BT = signal_id_BT.at[:, -1].set(step_tau_idx)
 
             pred_BTNL, _ = dynamics(latent_actions_BP1L, step_id_BT,
