@@ -821,6 +821,13 @@ class GenieDiffusion(nnx.Module):
 
             token_B1NL = jax.random.normal(_rng_noise_context, (B, 1, N, L))
             latents_BSNL = jnp.concatenate([latents_BSNL, token_B1NL], axis=1)
+
+            actions_BP1L = jax.lax.dynamic_slice(
+                latent_actions_BT1L,
+                (0, 0, 0, 0),
+                (B, frame_index + 1, 1, L)
+            )
+
             actions_BP1L = latent_actions_BT1L[:, :frame_index+1]
 
             carry_denoise = (latents_BSNL, actions_BP1L, frame_index)
