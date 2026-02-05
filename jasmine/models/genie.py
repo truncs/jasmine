@@ -788,7 +788,7 @@ class GenieDiffusion(nnx.Module):
                 dropout=self.dropout,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
-                rngs=self.rngs,
+                rngs=nnx.Rngs(0),
             )
 
             nnx.update(dynamics, dynamics_state)
