@@ -23,38 +23,33 @@ class Args:
     seed: int = 0
     seq_len: int = 16
     image_channels: int = 3
-    image_height: int = 90
-    image_width: int = 160
-    data_dir: str = "data/coinrun_episodes"
+    image_height: int = 64
+    image_width: int = 64
+    data_dir: str = ""
     checkpoint: str = ""
     print_action_indices: bool = True
     output_dir: str = "gifs/"
     # Sampling
     batch_size: int = 1
     start_frame: int = 1
-    diffusion_denoise_steps: int = 64
+    diffusion_denoise_steps: int = 4
     diffusion_corrupt_context_factor: float = 0.1
     # Tokenizer checkpoint
     tokenizer_dim: int = 512
     tokenizer_ffn_dim: int = 2048
     latent_patch_dim: int = 32
-    num_patch_latents: int = 1024
+    num_patch_latents: int = 128
     patch_size: int = 16
     tokenizer_num_blocks: int = 4
     tokenizer_num_heads: int = 8
-    # LAM checkpoint
-    lam_dim: int = 512
-    lam_ffn_dim: int = 2048
+    # Action config
     latent_action_dim: int = 32
-    num_actions: int = 6
-    lam_patch_size: int = 16
-    lam_num_blocks: int = 4
-    lam_num_heads: int = 8
-    use_gt_actions: bool = False
+    num_actions: int = 2
+    is_action_discrete: bool = False
     # Dynamics checkpoint
-    dyna_dim: int = 512
+    dyna_dim: int = 128
     dyna_ffn_dim: int = 2048
-    dyna_num_blocks: int = 6
+    dyna_num_blocks: int = 8
     dyna_num_heads: int = 8
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
@@ -160,7 +155,7 @@ if __name__ == "__main__":
         """Runs Genie.sample with pre-defined generation hyper-parameters."""
         frames = model.sample(
             batch,
-            args.seq_len,
+            args.start_frame,
             args.diffusion_denoise_steps,
             args.diffusion_corrupt_context_factor,
         )
@@ -170,7 +165,6 @@ if __name__ == "__main__":
     def _autoreg_sample(
         genie: GenieDiffusion, rng: jax.Array, batch: dict
     ) -> jax.Array:
-        batch["videos"] = batch["videos"][:, : args.start_frame]
         batch["rng"] = rng
         generated_vid_BSHWC = _sampling_fn(genie, batch)
         return generated_vid_BSHWC
@@ -207,8 +201,8 @@ if __name__ == "__main__":
     recon_video_BSHWC = _autoreg_sample(genie, rng, batch)
     recon_video_BSHWC = recon_video_BSHWC.astype(jnp.float32)
 
-    gt = gt_video.clip(0, 1)[:, args.start_frame :]
-    recon = recon_video_BSHWC.clip(0, 1)[:, args.start_frame :]
+    gt = gt_video.clip(0, 1)[:, args.start_frame:]
+    recon = recon_video_BSHWC.clip(0, 1)[:, args.start_frame:]
 
     ssim_vmap = jax.vmap(pix.ssim, in_axes=(0, 0))
     psnr_vmap = jax.vmap(pix.psnr, in_axes=(0, 0))
