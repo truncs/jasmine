@@ -120,11 +120,6 @@ if __name__ == "__main__":
         rngs=rngs,
     )
 
-    # Need to delete lam decoder for checkpoint loading
-    if not args.use_gt_actions:
-        assert genie.lam is not None
-        del genie.lam.decoder
-
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
         "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
