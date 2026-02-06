@@ -235,19 +235,9 @@ if __name__ == "__main__":
     imgs = [Image.fromarray(img) for img in frames]
     # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
     B = batch["videos"].shape[0]
-    if action_batch_E is not None:
-        action_batch_BSm11 = jnp.reshape(action_batch_E, (B, args.seq_len - 1, 1))
-    else:
-        action_batch_BSm11 = jnp.reshape(
-            batch["actions"][:, :-1], (B, args.seq_len - 1, 1)
-        )
+
     for t, img in enumerate(imgs[1:]):
         d = ImageDraw.Draw(img)
-        for row in range(B):
-            if args.print_action_indices:
-                action = action_batch_BSm11[row, t, 0]
-                y_offset = row * batch["videos"].shape[2] + 2
-                d.text((2, y_offset), f"{action}", fill=255)
 
     os.makedirs(args.output_dir, exist_ok=True)
     imgs[0].save(
