@@ -816,13 +816,13 @@ class GenieDiffusion(nnx.Module):
                 z_BTNL, (0, frame_idx, 0, 0), (B, 1, N, L)
             )
 
-            denom = max(1e-4, 1.0 - step_tau)
+            denom = jnp.maximum(1e-4, 1.0 - step_tau)
             b = (z_cur_B1NL.astype(jnp.float32) - pred_cur_B1NL.astype(jnp.float32)) / denom
             z_cur_B1NL = (z_cur_B1NL.astype(jnp.float32) + b * dt).astype(self.dtype)
-            
+
             # Update z_BTNL in place for the next diffusion step
             z_BTNL = z_BTNL.at[:, frame_idx, :, :].set(z_cur_B1NL[:, 0, :, :])
-            
+
             new_carry = (z_BTNL, latent_actions_BT1L, frame_idx)
             return new_carry
 
