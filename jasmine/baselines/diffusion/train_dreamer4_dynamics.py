@@ -70,7 +70,7 @@ class Args:
     latent_action_dim: int = 32
     num_actions: int = 2
     # Dynamics
-    dyna_dim: int = 128
+    dyna_dim: int = 512
     dyna_ffn_dim: int = 2048
     dyna_num_blocks: int = 8
     dyna_num_heads: int = 8
@@ -239,21 +239,7 @@ def build_checkpoint_manager(args: Args) -> Optional[ocp.CheckpointManager]:
             grain.checkpoint.CheckpointRestore,
             cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
         )
-        if args.val_data_dir:
-            handler_registry.add(
-                "val_dataloader_state",
-                grain.checkpoint.CheckpointSave,
-                cast(
-                    ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler
-                ),
-            )
-            handler_registry.add(
-                "val_dataloader_state",
-                grain.checkpoint.CheckpointRestore,
-                cast(
-                    ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler
-                ),
-            )
+
         checkpoint_options = ocp.CheckpointManagerOptions(
             save_interval_steps=args.log_checkpoint_interval,
             max_to_keep=3,
@@ -294,23 +280,15 @@ def restore_or_initialize_components(
         assert checkpoint_manager is not None
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
-        if val_iterator:
-            restore_args = ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
-                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
-                val_dataloader_state=grain.checkpoint.CheckpointRestore(val_iterator),  # type: ignore
-            )
-        else:
-            restore_args = ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
-                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
-            )
+
+        restore_args = ocp.args.Composite(
+            model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
+            train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+        )
         restored = checkpoint_manager.restore(restore_step, args=restore_args)
         restored_optimizer_state = restored["model_state"]
         nnx.update(optimizer, restored_optimizer_state)
         train_iterator = restored["train_dataloader_state"]
-        if val_iterator:
-            val_iterator = restored["val_dataloader_state"]
         step = restore_step or 0
         print(f"Restored dataloader and model state from step {step}")
     else:
@@ -319,7 +297,7 @@ def restore_or_initialize_components(
         optimizer = restore_genie_components(
             optimizer, replicated_sharding, _rng, "mae", args
         )
-    return step, optimizer, train_iterator, val_iterator, rng
+    return step, optimizer, train_iterator, rng
 
 
 def _calculate_step_metrics(
@@ -432,7 +410,7 @@ def main(args: Args) -> None:
         val_iterator = build_dataloader(args, args.val_data_dir)
 
     # --- Restore checkpoint ---
-    step, optimizer, train_iterator, val_iterator, rng = (
+    step, optimizer, train_iterator, rng = (
         restore_or_initialize_components(
             args,
             checkpoint_manager,
@@ -583,43 +561,35 @@ def main(args: Args) -> None:
         """Evaluate model and compute metrics"""
         genie.eval()
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
-        (loss, (recon, metrics)) = dynamics_loss_fn(genie, inputs)
-        val_output = {"loss": loss, "recon": recon, "metrics": metrics}
+        loss, metrics = dynamics_loss_fn(genie, inputs)
+        val_output = {"loss": loss, "metrics": metrics}
 
         # --- Evaluate full frame prediction (sampling) ---
-        if args.eval_full_frame:
-            inputs["videos"] = gt.astype(args.dtype)
-            lam_indices_E = None
-            if not args.use_gt_actions:
-                lam_indices_E = genie.vq_encode(inputs, training=False)
-                inputs["latent_actions"] = lam_indices_E
-            inputs["videos"] = inputs["videos"][
-                :, :-1
-            ]  # remove last frame for generation
-            recon_full_frame = genie.sample(
-                inputs,
-                args.seq_len,
-                args.diffusion_denoise_steps,
-            )
+        inputs["videos"] = gt.astype(args.dtype)
+        inputs["videos"] = inputs["videos"][
+            :, :-1
+        ]  # remove last frame for generation
+        recon_full_frame = genie.sample(
+            inputs,
+            args.seq_len,
+            args.diffusion_denoise_steps,
+        )
 
-            # Calculate metrics for the last frame only
-            step_outputs = {
+        step_outputs = {
                 "recon": recon_full_frame[:, -1],
-            }
-            if lam_indices_E is not None:
-                lam_indices_B = lam_indices_E.reshape((-1, args.seq_len - 1))[:, -1]
-                step_outputs["lam_indices"] = lam_indices_B
+        }
 
-            loss_full_frame, metrics_full_frame = _calculate_step_metrics(
-                step_outputs, gt[:, -1], args.num_actions
-            )
-            val_output.update(
-                {
-                    "loss_full_frame": loss_full_frame,
-                    "recon_full_frame": recon_full_frame,
-                    "metrics_full_frame": metrics_full_frame,
-                }
-            )
+        loss_full_frame, metrics_full_frame = _calculate_step_metrics(
+            step_outputs, gt[:, -1], args.num_actions
+        )
+
+        val_output.update(
+            {
+                "loss_full_frame": loss_full_frame,
+                "recon_full_frame": recon_full_frame,
+                "metrics_full_frame": metrics_full_frame,
+            }
+        )
         return val_output
 
     def calculate_validation_metrics(val_dataloader, genie, rng):
@@ -637,11 +607,11 @@ def main(args: Args) -> None:
             val_outputs = val_step(genie, batch)
             loss_per_step.append(val_outputs["loss"])
             metrics_per_step.append(val_outputs["metrics"])
-            recon = val_outputs["recon"]
-            if args.eval_full_frame:
-                loss_full_frame_per_step.append(val_outputs["loss_full_frame"])
-                metrics_full_frame_per_step.append(val_outputs["metrics_full_frame"])
-                recon_full_frame = val_outputs["recon_full_frame"]
+
+            loss_full_frame_per_step.append(val_outputs["loss_full_frame"])
+            metrics_full_frame_per_step.append(val_outputs["metrics_full_frame"])
+            recon_full_frame = val_outputs["recon_full_frame"]
+
             step += 1
             if step > args.val_steps:
                 break
@@ -656,16 +626,18 @@ def main(args: Args) -> None:
             for key in metrics_per_step[0].keys()
         }
         val_metrics["val_loss"] = np.mean(loss_per_step)
-        if args.eval_full_frame:
-            val_metrics_full_frame = {
-                f"val_full_frame_{key}": np.mean(
-                    [float(m[key]) for m in metrics_full_frame_per_step]
-                )
-                for key in metrics_full_frame_per_step[0].keys()
-            }
-            val_metrics.update(val_metrics_full_frame)
-            val_metrics["val_full_frame_loss"] = np.mean(loss_full_frame_per_step)
-        return val_metrics, batch, recon, recon_full_frame
+
+        val_metrics_full_frame = {
+            f"val_full_frame_{key}": np.mean(
+                [float(m[key]) for m in metrics_full_frame_per_step]
+            )
+            for key in metrics_full_frame_per_step[0].keys()
+        }
+
+        val_metrics.update(val_metrics_full_frame)
+        val_metrics["val_full_frame_loss"] = np.mean(loss_full_frame_per_step)
+
+        return val_metrics, batch, recon_full_frame
 
     # --- TRAIN LOOP ---
     dataloader_train = (
@@ -721,7 +693,7 @@ def main(args: Args) -> None:
             if dataloader_val and step % args.val_interval == 0:
                 rng, _rng_mask_val = jax.random.split(rng, 2)
                 print("Calculating validation metrics...")
-                val_metrics, val_gt_batch, val_recon, val_recon_full_frame = (
+                val_metrics, val_gt_batch, val_recon_full_frame = (
                     calculate_validation_metrics(
                         dataloader_val, optimizer.model, _rng_mask_val
                     )
@@ -730,9 +702,51 @@ def main(args: Args) -> None:
                 val_results = {
                     "metrics": val_metrics,
                     "gt_batch": val_gt_batch,
-                    "recon": val_recon,
                     "full_frame": val_recon_full_frame,
                 }
+
+                val_results["gt_seq_val"] = (
+                    val_results["gt_batch"]["videos"][0].astype(jnp.float32)
+                    / 255.0
+                )
+
+                val_results["full_frame_seq_val"] = val_results[
+                    "full_frame"
+                ][0].clip(0, 1)
+                val_results["val_full_frame_comparison_seq"] = (
+                    jnp.concatenate(
+                        (
+                            val_results["gt_seq_val"],
+                            val_results["full_frame_seq_val"],
+                        ),
+                        axis=1,
+                    )
+                )
+                val_results["val_full_frame_comparison_seq"] = (
+                    einops.rearrange(
+                        val_results["val_full_frame_comparison_seq"] * 255,
+                        "t h w c -> h (t w) c",
+                    )
+                )
+
+                if jax.process_index() == 0:
+                    log_images = dict(
+                        val_full_frame=wandb.Image(
+                            np.asarray(
+                                val_results["full_frame_seq_val"][
+                                    args.seq_len - 1
+                                ]
+                            )
+                        ),
+                        val_true_vs_full_frame=wandb.Image(
+                            np.asarray(
+                                val_results[
+                                    "val_full_frame_comparison_seq"
+                                ].astype(np.uint8)
+                            )
+                        ),
+                    )
+                    wandb.log(log_images)
 
             # --- Logging ---
             if args.log:
@@ -744,23 +758,12 @@ def main(args: Args) -> None:
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
                 assert checkpoint_manager is not None
                 optimizer_state = nnx.state(optimizer)
-                if val_iterator:
-                    ckpt_manager_args = ocp.args.Composite(
-                        model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
-                        train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
-                            train_iterator  # type: ignore
-                        ),
-                        val_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
-                            val_iterator  # type: ignore
-                        ),
-                    )
-                else:
-                    ckpt_manager_args = ocp.args.Composite(
-                        model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
-                        train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
-                            train_iterator  # type: ignore
-                        ),
-                    )
+                ckpt_manager_args = ocp.args.Composite(
+                    model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
+                    train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
+                        train_iterator  # type: ignore
+                    ),
+                )
                 checkpoint_manager.save(step, args=ckpt_manager_args)
                 print(f"Saved checkpoint at step {step}")
             if step >= args.num_steps:
