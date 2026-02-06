@@ -835,8 +835,10 @@ class GenieDiffusion(nnx.Module):
 
             # Initialize current frame with noise
             token_B1NL = jax.random.normal(_rng_noise_context, (B, 1, N, L))
-            latents_BTNL = latents_BTNL.at[:, frame_index : frame_index + 1].set(
-                token_B1NL.astype(latents_BTNL.dtype)
+            latents_BTNL = jax.lax.dynamic_update_slice(
+                latents_BTNL,
+                token_B1NL.astype(latents_BTNL.dtype),
+                (0, frame_index, 0, 0)
             )
 
             # NOTE: We pass the FULL latent_actions_BT1L. 
