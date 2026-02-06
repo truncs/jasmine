@@ -72,11 +72,11 @@ class Args:
     # Dynamics
     dyna_dim: int = 512
     dyna_ffn_dim: int = 2048
-    dyna_num_blocks: int = 8
+    dyna_num_blocks: int = 16
     dyna_num_heads: int = 8
     dyna_num_registers: int = 4
     dyna_num_agents: int = 1
-    dyna_bootstrap_fraction: float = 0.0
+    dyna_bootstrap_fraction: float = 0.25
     dyna_batch_bootstrap_start_step: int = 5000
     dyna_kmax: int = 128
     dropout: float = 0.0
