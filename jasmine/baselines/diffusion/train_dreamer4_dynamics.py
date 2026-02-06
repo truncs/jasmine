@@ -99,7 +99,7 @@ class Args:
     log_checkpoint_keep_period: int = 20_000
     log_gradients: bool = False
     val_data_dir: str = ""
-    val_interval: int = 20_000
+    val_interval: int = 10_000
     val_steps: int = 50
     eval_full_frame: bool = True
     val_temperature: float = 1
