@@ -860,9 +860,7 @@ class GenieDiffusion(nnx.Module):
         final_carry = autoregressive_step_fn(initial_carry, jnp.arange(context_len, T))
         final_latents_BTNL = final_carry[0]
 
-        final_videos_BSHWC = self.tokenizer.decode(
-            final_latents_BTNL, video_hw=(H, W)
-        )
+        final_videos_BSHWC = self.tokenizer.decode(final_latents_BTNL)
 
         return final_videos_BSHWC
 
