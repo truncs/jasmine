@@ -302,7 +302,7 @@ def restore_or_initialize_components(
             )
         else:
             restore_args = ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
                 train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
             )
         restored = checkpoint_manager.restore(restore_step, args=restore_args)
