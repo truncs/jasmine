@@ -757,7 +757,7 @@ class GenieDiffusion(nnx.Module):
         token_latents_BTNL = tokenizer_outputs["z"]
         B, T, N, L = token_latents_BTNL.shape
 
-        context_len = min(T-1, context_len)
+        context_len = min(T - 1, context_len)
 
         dynamics_state = nnx.state(self.dynamics)
 
@@ -766,12 +766,14 @@ class GenieDiffusion(nnx.Module):
             *batch["actions"].shape[:2], 1, self.latent_action_dim
         )
 
-        tau, tau_idx, dt = self._make_tau_schedule(1.0/diffusion_steps)
+        tau, tau_idx, dt = self._make_tau_schedule(1.0 / diffusion_steps)
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
-        def denoise_step_fn(carry: tuple[jax.Array, jax.Array],
-                            tau_param: tuple[jax.Array, jax.Array]):
-            z_BPNL, frame_idx = carry
+        def denoise_step_fn(
+            carry: tuple[jax.Array, jax.Array, jax.Array],
+            tau_param: tuple[jax.Array, jax.Array],
+        ):
+            z_BTNL, latent_actions_BT1L, frame_idx = carry
 
             step_tau, step_tau_idx = tau_param
 
@@ -794,57 +796,71 @@ class GenieDiffusion(nnx.Module):
             nnx.update(dynamics, dynamics_state)
 
             emax = int(round(math.log2(self.dyna_kmax)))
-            step_idxs = jnp.full(z_BPNL.shape[:2], emax)
-            step_id_BT = step_idxs.at[:, -1].set(
-                int(round(math.log2(diffusion_steps))))
+            step_idxs = jnp.full(z_BTNL.shape[:2], emax)
+            step_id_BT = step_idxs.at[:, frame_idx].set(
+                int(round(math.log2(diffusion_steps)))
+            )
 
-            signal_id_BT = jnp.full(z_BPNL.shape[:2], self.dyna_kmax - 1)
-            signal_id_BT = signal_id_BT.at[:, -1].set(step_tau_idx)
+            signal_id_BT = jnp.full(z_BTNL.shape[:2], self.dyna_kmax - 1)
+            signal_id_BT = signal_id_BT.at[:, frame_idx].set(step_tau_idx)
 
-            latent_actions_BP1L = latent_actions_BT1L.at[:, :frame_idx+1]
-
-            pred_BTNL, _ = dynamics(latent_actions_BP1L, step_id_BT,
-                                    signal_id_BT, z_BPNL)
-            z_cur_B1NL = z_BPNL[:, -1:, :, :]
-            pred_cur_B1NL = pred_BTNL[:, -1:, :, :]
+            pred_BTNL, _ = dynamics(
+                latent_actions_BT1L, step_id_BT, signal_id_BT, z_BTNL
+            )
+            # Use dynamic_slice to extract just the current frame prediction
+            # shape: (B, 1, N, L)
+            pred_cur_B1NL = jax.lax.dynamic_slice(
+                pred_BTNL, (0, frame_idx, 0, 0), (B, 1, N, L)
+            )
+            z_cur_B1NL = jax.lax.dynamic_slice(
+                z_BTNL, (0, frame_idx, 0, 0), (B, 1, N, L)
+            )
 
             denom = max(1e-4, 1.0 - step_tau)
-            b = (z_cur_B1NL.float() - pred_cur_B1NL.float()) / denom
-            z_cur_B1NL = (z_cur_B1NL.float() + b*dt).to(self.dtype)
-            z_BTNL = z_BPNL.at[:, -1, :, :].set(z_cur_B1NL)
-            new_carry = (z_BTNL, frame_idx)
+            b = (z_cur_B1NL.astype(jnp.float32) - pred_cur_B1NL.astype(jnp.float32)) / denom
+            z_cur_B1NL = (z_cur_B1NL.astype(jnp.float32) + b * dt).astype(self.dtype)
+            
+            # Update z_BTNL in place for the next diffusion step
+            z_BTNL = z_BTNL.at[:, frame_idx, :, :].set(z_cur_B1NL[:, 0, :, :])
+            
+            new_carry = (z_BTNL, latent_actions_BT1L, frame_idx)
             return new_carry
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
-        def autoregressive_step_fn(carry: tuple[jax.Array, jax.Array],
-                                   frame_index: jax.Array):
-            latents_BSNL, latent_actions_BT1L, rng = carry
+        def autoregressive_step_fn(
+            carry: tuple[jax.Array, jax.Array], frame_index: jax.Array
+        ):
+            latents_BTNL, rng = carry
             rng, _rng_noise_context = jax.random.split(rng)
 
+            # Initialize current frame with noise
             token_B1NL = jax.random.normal(_rng_noise_context, (B, 1, N, L))
-            latents_BSNL = jnp.concatenate([latents_BSNL, token_B1NL], axis=1)
+            latents_BTNL = latents_BTNL.at[:, frame_index : frame_index + 1].set(
+                token_B1NL.astype(latents_BTNL.dtype)
+            )
 
-            carry_denoise = (latents_BSNL, frame_index)
+            # NOTE: We pass the FULL latent_actions_BT1L. 
+            # The dynamics model is causal, so it won't attend to future actions relative to frame_index.
+            carry_denoise = (latents_BTNL, latent_actions_BT1L, frame_index)
 
-            final_carry_denoise = denoise_step_fn(
-                carry_denoise, (tau, tau_idx))
+            final_carry_denoise = denoise_step_fn(carry_denoise, (tau, tau_idx))
 
-            latents_BSNL = final_carry_denoise[0]
+            latents_BTNL = final_carry_denoise[0]
 
-            new_carry = (latents_BSNL, rng)
+            new_carry = (latents_BTNL, rng)
             return new_carry
 
         rng, _rng_sample = jax.random.split(rng)
 
-        token_latents_BSNL = token_latents_BTNL[:, :context_len]
-
-        initial_carry = (token_latents_BSNL, latent_actions_BT1L, _rng_sample)
-        final_carry = autoregressive_step_fn(
-            initial_carry, jnp.arange(context_len, T))
-        final_latents_BSNL = final_carry[0]
+        # We start with the full buffer, which contains GT for context frames.
+        # Autoreg step will overwrite frames starting from context_len.
+        initial_carry = (token_latents_BTNL, _rng_sample)
+        final_carry = autoregressive_step_fn(initial_carry, jnp.arange(context_len, T))
+        final_latents_BTNL = final_carry[0]
 
         final_videos_BSHWC = self.tokenizer.decode(
-            final_latents_BSNL, video_hw=(H, W))
+            final_latents_BTNL, video_hw=(H, W)
+        )
 
         return final_videos_BSHWC
 
