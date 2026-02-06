@@ -136,15 +136,14 @@ class Dreamer4TokenizerMAE(nnx.Module):
 
     def __call__(self, batch: dict, training: bool = True, rngs=nnx.Rngs) -> dict:
 
-        outputs = mask_and_encode(batch, training, rngs=rngs)
+        outputs = self.mask_and_encode(batch, training, rngs=rngs)
         z_latents = outputs['z']
         mask = outputs['mask']
         keep = outputs['keep']
-        
-        recon_patches_flat = self.decoder(z_latents)
-        
-        recon_videos = unpatchify(recon_patches_flat, self.patch_size, H, W)
-        
+
+
+        recon_videos = self.decode(z_latents)
+
         outputs = {
             "recon": recon_videos,
             "z": z_latents,
@@ -156,7 +155,7 @@ class Dreamer4TokenizerMAE(nnx.Module):
         rngs = batch.get("rng", None)
         videos = batch["videos"]
         B, T, H, W, C = videos.shape
-        
+
         patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
         B, T, Hp, Wp, D = patches.shape
         patches_flat = patches.reshape(B, T, Hp*Wp, D)
@@ -169,6 +168,13 @@ class Dreamer4TokenizerMAE(nnx.Module):
             'mask': mask,
             'keep': keep
         }
+
+    def decode(self, z: jnp.ndarray) -> jnp.ndarray:
+        recon_patches_flat = self.decoder(z)
+        recon_videos = unpatchify(
+            recon_patches_flat, self.patch_size, self.image_height, self.image_width)
+        return recon_videos
+
 
 def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.Array]:
     rng, _rng = jax.random.split(rng)
