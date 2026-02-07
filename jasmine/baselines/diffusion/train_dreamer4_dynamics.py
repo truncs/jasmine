@@ -80,7 +80,7 @@ class Args:
     dyna_batch_bootstrap_start_step: int = 5000
     dyna_kmax: int = 128
     dropout: float = 0.0
-    diffusion_denoise_steps: int = 0
+    diffusion_denoise_steps: int = 4
     diffusion_use_ramp_weight: bool = True
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
