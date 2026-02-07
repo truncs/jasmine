@@ -557,11 +557,12 @@ def main(args: Args) -> None:
         return loss, metrics
 
     @nnx.jit
-    def val_step(genie: GenieDiffusion, inputs: dict) -> dict:
+    def val_step(genie: GenieDiffusion, inputs: dict, rng: jax.Array) -> dict:
         """Evaluate model and compute metrics"""
         genie.eval()
+        rngs = nnx.Rngs(rng)
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
-        loss, metrics = dynamics_loss_fn(genie, inputs)
+        loss, metrics = dynamics_loss_fn(genie, inputs, rngs=rngs)
         val_output = {"loss": loss, "metrics": metrics}
 
         # --- Evaluate full frame prediction (sampling) ---
@@ -604,7 +605,7 @@ def main(args: Args) -> None:
         for batch in val_dataloader:
             rng, _rng_mask = jax.random.split(rng, 2)
             batch["rng"] = _rng_mask
-            val_outputs = val_step(genie, batch)
+            val_outputs = val_step(genie, batch, rng)
             loss_per_step.append(val_outputs["loss"])
             metrics_per_step.append(val_outputs["metrics"])
 
