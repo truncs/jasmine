@@ -765,6 +765,7 @@ class GenieDiffusion(nnx.Module):
         latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
             *batch["actions"].shape[:2], 1, self.latent_action_dim
         )
+        latent_actions_BT1L = latent_actions_BT1L[:, :T]
 
         tau, tau_idx, dt = self._make_tau_schedule(1.0 / diffusion_steps)
 
