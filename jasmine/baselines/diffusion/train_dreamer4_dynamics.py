@@ -486,12 +486,10 @@ def main(args: Args) -> None:
         sigma_idx_plus = sigma_idx_self + (k_max * d_half).astype(jnp.int32)
 
         # Corrupt Inputs
-        z_BTNL = model.encode(inputs, rngs=rngs)
+        z_BTNL = jax.lax.stop_gradient(model.encode(inputs, rngs=rngs))
 
-        jax.debug.print(f"Latents mean: {jnp.mean(jnp.abs(z_BTNL))}, std: {jnp.std(z_BTNL)}")
-        
-        z_corrupt_BTNL = model.target(z_BTNL,
-                                      sigma_BT=sigma_full, rngs=rngs)
+        z_corrupt_BTNL = jax.lax.stop_gradient(
+            model.target(z_BTNL, sigma_BT=sigma_full, rngs=rngs))
 
         # Call bootstrap dynamics
         pred_full_BTNL, _ = model.dyn(z_corrupt_BTNL, actions, step_idx_full, sigma_idx_full)
