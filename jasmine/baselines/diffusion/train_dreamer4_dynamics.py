@@ -470,9 +470,11 @@ def main(args: Args) -> None:
         inputs['rng'] = rng
 
         # --- Signal levels on each row's grid (one call for whole batch) ---
-        sigma_full, sigma_idx_full = _sample_tau_for_step(key_sigma_full, (B, T), k_max, step_idx_full)
-        sigma_emp   = sigma_full[:B_emp]
-        sigma_self  = sigma_full[B_emp:]
+        sigma_full, sigma_idx_full = _sample_tau_for_step(
+            key_sigma_full, (B, T), k_max, step_idx_full)
+
+        sigma_emp = sigma_full[:B_emp]
+        sigma_self = sigma_full[B_emp:]
         sigma_idx_self = sigma_idx_full[B_emp:]
 
         w_emp = 0.9 * sigma_emp + 0.1
@@ -485,6 +487,9 @@ def main(args: Args) -> None:
 
         # Corrupt Inputs
         z_BTNL = model.encode(inputs, rngs=rngs)
+
+        jax.debug.print(f"Latents mean: {jnp.mean(jnp.abs(z_BTNL))}, std: {jnp.std(z_BTNL)}")
+        
         z_corrupt_BTNL = model.target(z_BTNL,
                                       sigma_BT=sigma_full, rngs=rngs)
 
@@ -566,7 +571,6 @@ def main(args: Args) -> None:
         val_output = {"loss": loss, "metrics": metrics}
 
         # --- Evaluate full frame prediction (sampling) ---
-        inputs["videos"] = gt.astype(args.dtype)
         inputs["videos"] = gt.astype(args.dtype)
         # inputs["videos"] = inputs["videos"][
         #     :, :-1

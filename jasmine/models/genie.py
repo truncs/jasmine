@@ -707,9 +707,9 @@ class GenieDiffusion(nnx.Module):
 
     def target(self, z_BTNL: jax.Array, sigma_BT, *,
                rngs: nnx.Rngs) -> jax.Array:
-        zbar_BTNL = rngs.normal(z_BTNL.shape, dtype=z_BTNL.dtype)
+        noise_BTNL = rngs.normal(z_BTNL.shape, dtype=z_BTNL.dtype)
 
-        noisy_latents_BTNL = (1.0 - sigma_BT)[..., None, None]*zbar_BTNL + sigma_BT[..., None, None]*z_BTNL
+        noisy_latents_BTNL = (1.0 - sigma_BT)[..., None, None]*noise_BTNL + sigma_BT[..., None, None]*z_BTNL
 
         return noisy_latents_BTNL
 
