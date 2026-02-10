@@ -567,9 +567,10 @@ def main(args: Args) -> None:
 
         # --- Evaluate full frame prediction (sampling) ---
         inputs["videos"] = gt.astype(args.dtype)
-        inputs["videos"] = inputs["videos"][
-            :, :-1
-        ]  # remove last frame for generation
+        inputs["videos"] = gt.astype(args.dtype)
+        # inputs["videos"] = inputs["videos"][
+        #     :, :-1
+        # ]  # remove last frame for generation
         recon_full_frame = genie.sample(
             inputs,
             args.seq_len,
