@@ -597,8 +597,8 @@ def main(args: Args) -> None:
         )
         return val_output
 
-    def calculate_validation_metrics(val_dataloader, genie, rng):
-        step = 0
+    def calculate_validation_metrics(val_dataloader, genie, rng, global_step: int):
+        batch_idx = 0
         loss_per_step = []
         metrics_per_step = []
         loss_full_frame_per_step = []
@@ -609,7 +609,7 @@ def main(args: Args) -> None:
         for batch in val_dataloader:
             rng, _rng_mask = jax.random.split(rng, 2)
             batch["rng"] = _rng_mask
-            val_outputs = val_step(genie, batch, rng)
+            val_outputs = val_step(genie, batch, rng, step=global_step)
             loss_per_step.append(val_outputs["loss"])
             metrics_per_step.append(val_outputs["metrics"])
 
@@ -617,13 +617,13 @@ def main(args: Args) -> None:
             metrics_full_frame_per_step.append(val_outputs["metrics_full_frame"])
             recon_full_frame = val_outputs["recon_full_frame"]
 
-            step += 1
-            if step > args.val_steps:
+            batch_idx += 1
+            if batch_idx > args.val_steps:
                 break
 
-        if step < args.val_steps:
+        if batch_idx < args.val_steps:
             print(
-                f"Warning: Your validation dataset is too small to make val_steps many steps. Made {step} steps, expected {args.val_steps}"
+                f"Warning: Your validation dataset is too small to make val_steps many steps. Made {batch_idx} steps, expected {args.val_steps}"
             )
 
         val_metrics = {
@@ -676,7 +676,7 @@ def main(args: Args) -> None:
     if jax.process_index() == 0:
         first_batch = next(dataloader_train)
         first_batch["rng"] = rng  # type: ignore
-        compiled = train_step.lower(optimizer, first_batch, rng).compile()
+        compiled = train_step.lower(optimizer, first_batch, step, rng).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
         # Do not skip the first batch during training
@@ -700,7 +700,7 @@ def main(args: Args) -> None:
                 print("Calculating validation metrics...")
                 val_metrics, val_gt_batch, val_recon_full_frame = (
                     calculate_validation_metrics(
-                        dataloader_val, optimizer.model, _rng_mask_val
+                        dataloader_val, optimizer.model, _rng_mask_val, global_step=step
                     )
                 )
                 print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
