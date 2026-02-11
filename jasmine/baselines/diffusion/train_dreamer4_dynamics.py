@@ -218,8 +218,6 @@ def build_dataloader(args: Args, data_dir: str, num_epochs: Optional[int] = None
     return grain_dataloader
 
 
-
-
 def build_checkpoint_manager(args: Args) -> Optional[ocp.CheckpointManager]:
     if args.restore_ckpt or args.save_ckpt:
         handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
@@ -327,7 +325,7 @@ def _calculate_step_metrics(
             ramp_weight = 0.9 * outputs["signal_level"] + 0.1
             loss = jnp.mean(mse_BT * ramp_weight)
         else:
-            lposs = mse
+            loss = mse
 
     if "lam_indices" in outputs.keys():
         _, index_counts_lam = jnp.unique_counts(
@@ -517,8 +515,8 @@ def main(args: Args) -> None:
                        (1.0 - sigma_self)[..., None, None])
             z_prime_BTNL = z_corrupt_self_BTNL + b_prime * d_half[..., None, None]
             pred_half2_BTNL, _ = model.dyn(z_prime_BTNL, actions_self, step_idx_half, sigma_idx_plus)
-            b_doubleprime = (pred_half2_BTNL - z_prime_BTNL) / (1.0 - sigma_plus)[...,None, None]
-            vhat_sigma = (pred_self_BTNL - z_corrupt_self_BTNL) / (1.0 - sigma_self)[...,None, None]
+            b_doubleprime = (pred_half2_BTNL - z_prime_BTNL) / (1.0 - sigma_plus)[..., None, None]
+            vhat_sigma = (pred_self_BTNL - z_corrupt_self_BTNL) / (1.0 - sigma_self)[..., None, None]
             vbar_target = jax.lax.stop_gradient((b_prime + b_doubleprime) / 2.0)
             boot_per = (1.0 - sigma_self)**2 * jnp.mean((vhat_sigma - vbar_target)**2, axis=(2, 3))  # (B_self,T)
             loss_self = jnp.mean(boot_per * w_self)
@@ -546,6 +544,7 @@ def main(args: Args) -> None:
         optimizer: nnx.ModelAndOptimizer, inputs: dict, step: int, rng: jax.Array,
     ) -> tuple[jax.Array, dict]:
         rngs = nnx.Rngs(rng)
+
         def loss_fn(model: GenieDiffusion, rngs: nnx.Rngs) -> tuple[jax.Array, dict]:
             model.train()
             return dynamics_loss_fn(model, inputs, step, rngs)
@@ -604,7 +603,7 @@ def main(args: Args) -> None:
         loss_full_frame_per_step = []
         metrics_full_frame_per_step = []
         batch = None
-        recon = None
+
         recon_full_frame = None
         for batch in val_dataloader:
             rng, _rng_mask = jax.random.split(rng, 2)
