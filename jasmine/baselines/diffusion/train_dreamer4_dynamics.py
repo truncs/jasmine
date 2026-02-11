@@ -426,6 +426,7 @@ def main(args: Args) -> None:
     def dynamics_loss_fn(
         model: GenieDiffusion,
         inputs: dict,
+        step: int,
         rngs: nnx.Rngs,
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
@@ -542,12 +543,12 @@ def main(args: Args) -> None:
 
     @nnx.jit(donate_argnums=0)
     def train_step(
-        optimizer: nnx.ModelAndOptimizer, inputs: dict, rng: jax.Array,
+        optimizer: nnx.ModelAndOptimizer, inputs: dict, step: int, rng: jax.Array,
     ) -> tuple[jax.Array, dict]:
         rngs = nnx.Rngs(rng)
         def loss_fn(model: GenieDiffusion, rngs: nnx.Rngs) -> tuple[jax.Array, dict]:
             model.train()
-            return dynamics_loss_fn(model, inputs, rngs)
+            return dynamics_loss_fn(model, inputs, step, rngs)
 
         (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
             optimizer.model, rngs
@@ -560,12 +561,12 @@ def main(args: Args) -> None:
         return loss, metrics
 
     @nnx.jit
-    def val_step(genie: GenieDiffusion, inputs: dict, rng: jax.Array) -> dict:
+    def val_step(genie: GenieDiffusion, inputs: dict, rng: jax.Array, step: int = 0) -> dict:
         """Evaluate model and compute metrics"""
         genie.eval()
         rngs = nnx.Rngs(rng)
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
-        loss, metrics = dynamics_loss_fn(genie, inputs, rngs=rngs)
+        loss, metrics = dynamics_loss_fn(genie, inputs, step, rngs=rngs)
         val_output = {"loss": loss, "metrics": metrics}
 
         # --- Evaluate full frame prediction (sampling) ---
@@ -687,7 +688,7 @@ def main(args: Args) -> None:
             # --- Train step ---
             rng, _rng_mask = jax.random.split(rng, 2)
             batch["rng"] = _rng_mask
-            loss, metrics = train_step(optimizer, batch, rng)
+            loss, metrics = train_step(optimizer, batch, step, rng)
             if step == first_step:
                 print_mem_stats("After params initialized")
             step += 1
