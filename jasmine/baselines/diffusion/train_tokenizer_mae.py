@@ -483,7 +483,7 @@ def main(args: Args) -> None:
         psnr = jnp.asarray(pix.psnr(gt_clipped, recon)).mean()
         ssim = jnp.asarray(pix.ssim(gt_clipped, recon)).mean()
 
-        loss = normalized_mse + 0.3 * normalized_lpips
+        loss = normalized_mse + 0.2 * normalized_lpips
 
         metrics = dict(
             mse=mse,
