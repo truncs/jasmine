@@ -24,6 +24,7 @@ import lpips_jax
 
 from jasmine.models.tokenizer import TokenizerMAE
 from jasmine.models.dreamer4 import Encoder, Decoder
+from jasmine.losses.frequency_loss import FocalFrequencyLoss
 from jasmine.utils.dataloader import get_dataloader
 from jasmine.utils.preprocess import patchify, unpatchify
 from jasmine.utils.train_utils import (
@@ -72,6 +73,7 @@ class Args:
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
     use_flash_attention: bool = True
+    frequency_loss_weight: float = 0.1
     # Logging
     log: bool = True
     entity: str = ""
@@ -133,6 +135,7 @@ class Dreamer4TokenizerMAE(nnx.Module):
         self.decoder = Decoder(**decoder_kwargs, rngs=rngs)
         self.mse_norm = MovingRMS()
         self.lpips_norm = MovingRMS()
+        self.freq_norm = MovingRMS()
 
     def __call__(self, batch: dict, training: bool = True, rngs=nnx.Rngs) -> dict:
 
@@ -440,6 +443,7 @@ def main(args: Args) -> None:
 
     # LPIPS evaluator
     lpips_evaluator = lpips_jax.LPIPSEvaluator(replicate=False, net='alexnet') # ['alexnet', 'vgg16']
+    freq_loss_fn = FocalFrequencyLoss(loss_weight=args.frequency_loss_weight, alpha=1.0)
 
     # --- Define loss and train step (close over args) ---
     def tokenizer_loss_fn(
@@ -474,16 +478,20 @@ def main(args: Args) -> None:
         lpips = lpips_evaluator(jax.lax.collapse(gt_masked, 0, 2),
                                 jax.lax.collapse(recon_masked, 0, 2)).mean()
 
+        # Frequency Loss
+        freq_loss = freq_loss_fn(outputs["recon"], gt)
+
         # RMS Normalization
         normalized_mse = model.mse_norm(mse, training=training)
         normalized_lpips = model.lpips_norm(lpips, training=training)
+        normalized_freq = model.freq_norm(freq_loss, training=training)
 
         gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
         recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
         psnr = jnp.asarray(pix.psnr(gt_clipped, recon)).mean()
         ssim = jnp.asarray(pix.ssim(gt_clipped, recon)).mean()
 
-        loss = normalized_mse + 0.2 * normalized_lpips
+        loss = normalized_mse + 0.2 * normalized_lpips + normalized_freq
 
         metrics = dict(
             mse=mse,
@@ -492,6 +500,7 @@ def main(args: Args) -> None:
             normalized_lpips=normalized_lpips,
             mse_rms=model.mse_norm.rms.get_value(),
             lpips_rms=model.lpips_norm.rms.get_value(),
+            frequency_loss=freq_loss,
             psnr=psnr,
             ssim=ssim,
             loss=loss,
