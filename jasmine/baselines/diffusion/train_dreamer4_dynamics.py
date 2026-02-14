@@ -107,6 +107,8 @@ class Args:
     wandb_id: str = ""
     num_workers: int = 8
     prefetch_buffer_size: int = 1
+    val_num_workers: int = 4
+    val_prefetch_buffer_size: int = 2
 
 
 def build_model(args: Args, rng: jax.Array) -> tuple[GenieDiffusion, jax.Array]:
@@ -196,7 +198,7 @@ def shard_optimizer_states(
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(args: Args, data_dir: str, num_epochs: Optional[int] = None) -> grain.DataLoaderIterator:
+def build_dataloader(args: Args, data_dir: str, num_workers: int, prefetch_buffer_size: int, num_epochs: Optional[int] = None) -> grain.DataLoaderIterator:
     image_shape = (args.image_height, args.image_width, args.image_channels)
     array_record_files = [
         os.path.join(data_dir, x)
@@ -210,8 +212,8 @@ def build_dataloader(args: Args, data_dir: str, num_epochs: Optional[int] = None
         # The dataloader shards the dataset across all processes
         args.batch_size,
         *image_shape,
-        num_workers=args.num_workers,
-        prefetch_buffer_size=args.prefetch_buffer_size,
+        num_workers=num_workers,
+        prefetch_buffer_size=prefetch_buffer_size,
         seed=args.seed,
         num_epochs=num_epochs,
     )
@@ -283,13 +285,15 @@ def restore_or_initialize_components(
             model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
             train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
         )
-        restored = checkpoint_manager.restore(restore_step, args=restore_args)
-        restored_optimizer_state = restored["model_state"]
-        nnx.update(optimizer, restored_optimizer_state)
-        train_iterator = restored["train_dataloader_state"]
+        if restore_step:
+            restored = checkpoint_manager.restore(restore_step, args=restore_args)
+            restored_optimizer_state = restored["model_state"]
+            nnx.update(optimizer, restored_optimizer_state)
+            train_iterator = restored["train_dataloader_state"]
         step = restore_step or 0
         print(f"Restored dataloader and model state from step {step}")
-    else:
+    
+    if step == 0:
         # Restore from pre-trained tokenizer (and LAM)
         rng, _rng = jax.random.split(rng)
         optimizer = restore_genie_components(
@@ -402,10 +406,10 @@ def main(args: Args) -> None:
     checkpoint_manager = build_checkpoint_manager(args)
 
     # --- Create DataLoaderIterator from dataloader ---
-    train_iterator = build_dataloader(args, args.data_dir)
+    train_iterator = build_dataloader(args, args.data_dir, args.num_workers, args.prefetch_buffer_size)
     val_iterator = None
     if args.val_data_dir:
-        val_iterator = build_dataloader(args, args.val_data_dir)
+        val_iterator = build_dataloader(args, args.val_data_dir, args.val_num_workers, args.val_prefetch_buffer_size)
 
     # --- Restore checkpoint ---
     step, optimizer, train_iterator, rng = (
