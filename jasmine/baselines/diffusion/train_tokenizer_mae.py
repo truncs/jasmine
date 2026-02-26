@@ -8,32 +8,11 @@ from typing import cast, Optional
 
 import einops
 import itertools
-from jax.sharding import Mesh, PartitionSpec, NamedSharding
-from jax.experimental.mesh_utils import create_device_mesh
-import optax
-import orbax.checkpoint as ocp
 import numpy as np
 import dm_pix as pix
-import jax
-import jax.numpy as jnp
 import tyro
 import wandb
 import grain
-import flax.nnx as nnx
-import lpips_jax
-
-from jasmine.models.tokenizer import TokenizerMAE
-from jasmine.models.dreamer4 import Encoder, Decoder
-from jasmine.losses.frequency_loss import FocalFrequencyLoss
-from jasmine.utils.dataloader import get_dataloader
-from jasmine.utils.preprocess import patchify, unpatchify
-from jasmine.utils.train_utils import (
-    get_lr_schedule,
-    count_parameters_by_component,
-    print_mem_stats,
-    print_compiled_memory_stats,
-    print_compiled_cost_analysis,
-)
 
 
 @dataclass
@@ -370,6 +349,38 @@ def restore_checkpoint_if_needed(
 
 
 def main(args: Args) -> None:
+
+    # --- Create DataLoaderIterator from dataloader ---
+    train_iterator = build_dataloader(args, args.data_dir)
+    val_iterator = None
+    if args.val_data_dir:
+        num_epochs = 2 if args.val_only else None
+        val_iterator = build_dataloader(args, args.val_data_dir, num_epochs)
+
+    from jax.sharding import Mesh, PartitionSpec, NamedSharding
+    from jax.experimental.mesh_utils import create_device_mesh
+    import optax
+    import orbax.checkpoint as ocp
+    import jax
+    import jax.numpy as jnp
+
+    import flax.nnx as nnx
+    import lpips_jax
+
+    from jasmine.models.tokenizer import TokenizerMAE
+    from jasmine.models.dreamer4 import Encoder, Decoder
+    from jasmine.losses.frequency_loss import FocalFrequencyLoss
+    from jasmine.utils.dataloader import get_dataloader
+    from jasmine.utils.preprocess import patchify, unpatchify
+    from jasmine.utils.train_utils import (
+        get_lr_schedule,
+        count_parameters_by_component,
+        print_mem_stats,
+        print_compiled_memory_stats,
+        print_compiled_cost_analysis,
+    )
+
+
     jax.distributed.initialize(
         coordinator_address="localhost:1234",
         num_processes=1,
@@ -430,12 +441,6 @@ def main(args: Args) -> None:
     # --- Initialize checkpoint manager ---
     checkpoint_manager = build_checkpoint_manager(args)
 
-    # --- Create DataLoaderIterator from dataloader ---
-    train_iterator = build_dataloader(args, args.data_dir)
-    val_iterator = None
-    if args.val_data_dir:
-        num_epochs = 2 if args.val_only else None
-        val_iterator = build_dataloader(args, args.val_data_dir, num_epochs)
 
     # --- Restore checkpoint ---
     step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
@@ -786,6 +791,5 @@ def main(args: Args) -> None:
 import multiprocessing
 
 if __name__ == "__main__":
-    multiprocessing.set_start_method("spawn")
     args = tyro.cli(Args)
     main(args)
