@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import cast, Optional
 
 import jax.numpy as jnp
+import flax.nnx as nnx
 
 import einops
 import itertools
