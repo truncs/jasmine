@@ -1,6 +1,6 @@
 import jax
 import numpy as np
-import grain
+import grain.python as grain
 from typing import Any, Optional
 import pickle
 
