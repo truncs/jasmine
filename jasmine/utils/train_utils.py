@@ -2,6 +2,7 @@ import jax
 import optax
 import flax.nnx as nnx
 import operator
+from typing import cast, Optional
 
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.mesh_utils import create_device_mesh
