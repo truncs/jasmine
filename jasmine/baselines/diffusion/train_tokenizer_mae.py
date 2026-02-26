@@ -783,8 +783,16 @@ def main(args: Args) -> None:
         checkpoint_manager.close()
 
 
-import multiprocessing
-
 if __name__ == "__main__":
+    import os
+    import multiprocessing
+    from absl import flags 
+
+    if multiprocessing.parent_process() is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+        os.environ["JAX_PLATFORMS"] = "cpu"
+        os.environ["JAX_PLATFORM_NAME"] = "cpu"
+        setattr(flags.FLAGS, "jax_allow_unused_gpus", True)
+
     args = tyro.cli(Args)
     main(args)
