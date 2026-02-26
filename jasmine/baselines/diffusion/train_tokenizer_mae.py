@@ -66,7 +66,8 @@ class Args:
     latent_dim: int = 32
     num_latents: int = 128
     patch_size: int = 16
-    num_blocks: int = 4
+    enc_depth: int = 8
+    dec_depth: int = 12
     num_heads: int = 8
     dropout: float = 0.0
     max_mask_ratio: float = 0.9
@@ -191,7 +192,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
         "n_latents": args.num_latents, 
         "n_patches": num_patches, 
         "n_heads": 8, 
-        "depth": 8, 
+        "depth": args.enc_depth, 
         "dropout": 0.05,
         "d_bottleneck": args.latent_dim,
         "mae_p_min": 0.0, 
@@ -207,7 +208,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
         "n_heads": 8, 
         "n_patches": num_patches, 
         "n_latents": args.num_latents, 
-        "depth": 12,
+        "depth": args.dec_depth,
         "d_patch": d_patch, 
         "dropout": 0.05, 
         "time_every": 4,
