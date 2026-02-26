@@ -57,9 +57,9 @@ def preprocess_npz(input_dir, original_fps,
             act_current_chunk = data['action']
             reward_current_chunk = data['reward']
 
-            obs_chunks.extend(obs_current_chunk)
-            act_chunks.extend(act_current_chunk)
-            reward_chunks.extend(reward_current_chunk)
+            obs_chunks.append(obs_current_chunk)
+            act_chunks.append(act_current_chunk)
+            reward_chunks.append(reward_current_chunk)
 
         return obs_chunks, act_chunks, reward_chunks
     except Exception as e:
@@ -80,9 +80,9 @@ def save_split(pool_args, chunks_per_file, output_path):
         args_batch = pool_args[bucket_idx : bucket_idx + num_processes]
         with mp.Pool(processes=num_processes) as pool:
             for chunk in pool.starmap(preprocess_npz, args_batch):
-                obs_chunks.extend(chunk[0])
-                act_chunks.extend(chunk[1])
-                reward_chunks.extend(chunk[2])
+                obs_chunks.append(chunk[0])
+                act_chunks.append(chunk[1])
+                reward_chunks.append(chunk[2])
         results_batch, file_idx, chunks, _ = save_chunks(
             file_idx, chunks_per_file, output_path, obs_chunks, act_chunks
         )
