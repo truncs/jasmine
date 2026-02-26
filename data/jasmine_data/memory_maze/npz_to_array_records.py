@@ -57,9 +57,9 @@ def preprocess_npz(input_dir, original_fps,
             act_current_chunk = data['action']
             reward_current_chunk = data['reward']
 
-            obs_chunks.extend(np.expand_dims(obs_current_chunk, axis=0))
-            act_chunks.extend(np.expand_dims(act_current_chunk, axis=0))
-            reward_chunks.extend(np.expand_dims(reward_current_chunk, axis=0))
+            obs_chunks.extend([obs_current_chunk])
+            act_chunks.extend([act_current_chunk])
+            reward_chunks.extend([reward_current_chunk])
 
         return obs_chunks, act_chunks, reward_chunks
     except Exception as e:
