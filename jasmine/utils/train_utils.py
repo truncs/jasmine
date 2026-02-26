@@ -215,7 +215,7 @@ def build_checkpoint_manager(restore_ckpt: bool, save_ckpt: bool, checkpoint_dir
         )
         handler_registry.add(
             "train_dataloader_state",
-            grain.checkpoint.CheckpointSave,l
+            grain.checkpoint.CheckpointSave,
             cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
         )
         handler_registry.add(
