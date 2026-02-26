@@ -754,7 +754,7 @@ class ActionEncoder(nnx.Module):
 
         return out
 
-        class MovingRMS(nnx.Module):
+class MovingRMS(nnx.Module):
     def __init__(self, momentum: float = 0.99):
         self.momentum = momentum
         self.rms = nnx.Variable(jnp.ones((), dtype=jnp.float32))
