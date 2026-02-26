@@ -80,7 +80,7 @@ class Args:
 
 
 def main(args: Args) -> None:
-
+    import jax
     jax.distributed.initialize(
         coordinator_address="localhost:1234",
         num_processes=1,
@@ -121,7 +121,6 @@ def main(args: Args) -> None:
 
     import optax
     import orbax.checkpoint as ocp
-    import jax
     import jax.numpy as jnp
 
     import flax.nnx as nnx
