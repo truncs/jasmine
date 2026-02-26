@@ -9,6 +9,7 @@ from typing import cast, Optional
 import jax.numpy as jnp
 import flax.nnx as nnx
 
+from jasmine.utils.dataloader import get_dataloader
 import einops
 import itertools
 import numpy as np
@@ -78,290 +79,36 @@ class Args:
     prefetch_buffer_size: int = 1
 
 
-
-class MovingRMS(nnx.Module):
-    def __init__(self, momentum: float = 0.99):
-        self.momentum = momentum
-        self.rms = nnx.Variable(jnp.ones((), dtype=jnp.float32))
-
-    def __call__(self, x: jax.Array, training: bool = True) -> jax.Array:
-        if training:
-            # Update running RMS estimate: RMS = sqrt(E[x^2])
-            # For scalar loss, mean(square(x)) is just x^2
-            ms = jnp.mean(jnp.square(x))
-            self.rms.value = self.momentum * self.rms.get_value() + (1 - self.momentum) * jnp.sqrt(ms + 1e-8)
-        
-        # Normalize by stop-gradiented RMS to avoid differentiating through the moving average
-        return x / jax.lax.stop_gradient(jnp.maximum(self.rms.get_value(), 1e-8))
-
-
-class Dreamer4TokenizerMAE(nnx.Module):
-    def __init__(
-        self,
-        image_height: int,
-        image_width: int,
-        patch_size: int,
-        in_dim: int,
-        encoder_kwargs: dict,
-        decoder_kwargs: dict,
-        dtype: jnp.dtype = jnp.float32,
-        *,
-        rngs: nnx.Rngs,
-    ):
-        self.image_height = image_height
-        self.image_width = image_width
-        self.patch_size = patch_size
-        self.in_dim = in_dim
-        self.dtype = dtype
-
-        self.encoder = Encoder(**encoder_kwargs, rngs=rngs)
-        self.decoder = Decoder(**decoder_kwargs, rngs=rngs)
-        self.mse_norm = MovingRMS()
-        self.lpips_norm = MovingRMS()
-        self.freq_norm = MovingRMS()
-
-    def __call__(self, batch: dict, training: bool = True, rngs=nnx.Rngs) -> dict:
-
-        outputs = self.mask_and_encode(batch, training, rngs=rngs)
-        z_latents = outputs['z']
-        mask = outputs['mask']
-        keep = outputs['keep']
-
-
-        recon_videos = self.decode(z_latents)
-
-        outputs = {
-            "recon": recon_videos,
-            "z": z_latents,
-            "mask": mask
-        }
-        return outputs
-
-    def mask_and_encode(self, batch: dict, training: bool = True, rngs: nnx.Rngs = None) -> dict:
-        rngs = batch.get("rng", None)
-        videos = batch["videos"]
-        B, T, H, W, C = videos.shape
-
-        patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
-        B, T, Hp, Wp, D = patches.shape
-        patches_flat = patches.reshape(B, T, Hp*Wp, D)
-
-        mae_rng = nnx.Rngs(mae=rngs) if rngs is not None else None
-
-        z_latents, (mask, keep) = self.encoder(patches_flat, rngs=mae_rng)
-        return {
-            'z': z_latents,
-            'mask': mask,
-            'keep': keep
-        }
-
-    def decode(self, z: jnp.ndarray) -> jnp.ndarray:
-        recon_patches_flat = self.decoder(z)
-        recon_videos = unpatchify(
-            recon_patches_flat, self.patch_size, self.image_height, self.image_width)
-        return recon_videos
-
-
-def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.Array]:
-    rng, _rng = jax.random.split(rng)
-    rngs = nnx.Rngs(_rng)
-    
-    num_patches = (args.image_height // args.patch_size) * (args.image_width // args.patch_size)
-    d_patch = args.image_channels * args.patch_size ** 2
-
-    enc_kwargs = {
-        "d_model": 512, 
-        "n_latents": args.num_latents, 
-        "n_patches": num_patches, 
-        "n_heads": 8, 
-        "depth": args.enc_depth, 
-        "dropout": 0.05,
-        "d_bottleneck": args.latent_dim,
-        "mae_p_min": 0.0, 
-        "mae_p_max": 0.9, 
-        "time_every": 4,
-        "d_patch": d_patch, 
-        "use_flash_attention": args.use_flash_attention,
-        "dtype": args.dtype,
-    }
-    
-    dec_kwargs = {
-        "d_model": 512, 
-        "n_heads": 8, 
-        "n_patches": num_patches, 
-        "n_latents": args.num_latents, 
-        "depth": args.dec_depth,
-        "d_patch": d_patch, 
-        "dropout": 0.05, 
-        "time_every": 4,
-        "d_bottleneck": args.latent_dim,
-        "use_flash_attention": args.use_flash_attention,
-        "dtype": args.dtype,
-    }
-
-    tokenizer = Dreamer4TokenizerMAE(
-        image_height=args.image_height,
-        image_width=args.image_width,
-        patch_size=args.patch_size,
-        in_dim=args.image_channels,
-        encoder_kwargs=enc_kwargs,
-        decoder_kwargs=dec_kwargs,
-        dtype=args.dtype,
-        rngs=rngs,
-    )
-    return tokenizer, rng
-
-
-def build_optimizer(model: Dreamer4TokenizerMAE, args: Args) -> nnx.ModelAndOptimizer:
-    lr_schedule = get_lr_schedule(
-        args.lr_schedule,
-        args.init_lr,
-        args.max_lr,
-        args.decay_end,
-        args.num_steps,
-        args.warmup_steps,
-        args.wsd_decay_steps,
-    )
-    tx = optax.adamw(
-        learning_rate=lr_schedule,
-        b1=0.9,
-        b2=0.9,
-        weight_decay=1e-4,
-        mu_dtype=args.param_dtype,  # moments in full precision
-    )
-    optimizer = nnx.ModelAndOptimizer(model, tx)
-    return optimizer
-
-
-def build_mesh_and_sharding(
-    num_devices: int,
-) -> tuple[Mesh, NamedSharding, NamedSharding]:
-    device_mesh_arr = create_device_mesh((num_devices,))
-    mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
-    replicated_sharding = NamedSharding(mesh, PartitionSpec())
-    videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
-    return mesh, replicated_sharding, videos_sharding
-
-
-def shard_optimizer_states(
-    optimizer: nnx.ModelAndOptimizer, replicated_sharding: NamedSharding
-) -> None:
-    model_state = nnx.state(optimizer.model)
-    model_sharded_state = jax.lax.with_sharding_constraint(
-        model_state, replicated_sharding
-    )
-    nnx.update(optimizer.model, model_sharded_state)
-    optimizer_state = nnx.state(optimizer, nnx.optimizer.OptState)
-    optimizer_sharded_state = jax.lax.with_sharding_constraint(
-        optimizer_state, replicated_sharding
-    )
-    nnx.update(optimizer, optimizer_sharded_state)
-
-
-def build_dataloader(args: Args, data_dir: str, num_epochs: Optional[int] = None) -> grain.DataLoaderIterator:
-    image_shape = (args.image_height, args.image_width, args.image_channels)
-    array_record_files = [
-        os.path.join(data_dir, x)
-        for x in os.listdir(data_dir)
-        if x.endswith(".array_record")
-    ]
-    grain_dataloader = get_dataloader(
-        array_record_files,
-        args.seq_len,
-        # NOTE: We deliberately pass the global batch size
-        # The dataloader shards the dataset across all processes
-        args.batch_size,
-        *image_shape,
-        num_workers=args.num_workers,
-        prefetch_buffer_size=args.prefetch_buffer_size,
-        seed=args.seed,
-        num_epochs=num_epochs,
-    )
-    return grain_dataloader
-
-
-def build_checkpoint_manager(args: Args) -> Optional[ocp.CheckpointManager]:
-    if args.restore_ckpt or args.save_ckpt:
-        handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
-        handler_registry.add(
-            "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
-        )
-        handler_registry.add(
-            "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
-        )
-        handler_registry.add(
-            "train_dataloader_state",
-            grain.checkpoint.CheckpointSave,
-            cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
-        )
-        handler_registry.add(
-            "train_dataloader_state",
-            grain.checkpoint.CheckpointRestore,
-            cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
-        )
-        checkpoint_options = ocp.CheckpointManagerOptions(
-            save_interval_steps=args.log_checkpoint_interval,
-            max_to_keep=3,
-            best_fn=lambda m: m["val_psnr"] if "val_psnr" in m else m["psnr"],
-            best_mode="max",
-            keep_period=args.log_checkpoint_keep_period,
-            step_format_fixed_length=6,
-            cleanup_tmp_directories=True,
-        )
-        checkpoint_manager = ocp.CheckpointManager(
-            args.ckpt_dir,
-            options=checkpoint_options,
-            handler_registry=handler_registry,
-        )
-        return checkpoint_manager
-    else:
-        return None
-
-
-def restore_checkpoint_if_needed(
-    args: Args,
-    checkpoint_manager: Optional[ocp.CheckpointManager],
-    optimizer: nnx.ModelAndOptimizer,
-    train_iterator: grain.DataLoaderIterator,
-    val_iterator: Optional[grain.DataLoaderIterator],
-    restore_step: Optional[int] = None,
-) -> tuple[
-    int, nnx.ModelAndOptimizer, grain.DataLoaderIterator, grain.DataLoaderIterator
-]:
-    step = 0
-    if checkpoint_manager and restore_step is None:
-        restore_step = checkpoint_manager.latest_step()
-        
-    if args.restore_ckpt:
-        assert checkpoint_manager is not None
-        abstract_optimizer = nnx.eval_shape(lambda: optimizer)
-        abstract_optimizer_state = nnx.state(abstract_optimizer)
-        restore_args = ocp.args.Composite(
-            model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
-            train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
-            )
-        if restore_step:
-            restored = checkpoint_manager.restore(
-                restore_step, args=restore_args)
-            restored_optimizer_state = restored["model_state"]
-            nnx.update(optimizer, restored_optimizer_state)
-            train_iterator = restored["train_dataloader_state"]
-        step = restore_step or 0
-        print(f"Restored dataloader and model state from step {step}")
-    return step, optimizer, train_iterator, val_iterator
-
-
 def main(args: Args) -> None:
 
     # --- Create DataLoaderIterator from dataloader ---
-    train_iterator = build_dataloader(args, args.data_dir)
+    train_iterator = build_dataloader(
+        image_height=args.image_height,
+        image_width=args.image_width,
+        image_channels=args.image_channels,
+        seq_len=args.seq_len,
+        batch_size=args.batch_size,
+        data_dir=args.data_dir,
+        num_workers=args.num_workers,
+        prefetch_buffer_size=args.prefetch_buffer_size,
+        seed=42
+    )
     val_iterator = None
     if args.val_data_dir:
         num_epochs = 2 if args.val_only else None
-        val_iterator = build_dataloader(args, args.val_data_dir, num_epochs)
+        val_iterator = build_dataloader(
+            image_height=args.image_height,
+            image_width=args.image_width,
+            image_channels=args.image_channels,
+            seq_len=args.seq_len,
+            batch_size=args.batch_size,
+            data_dir=args.val_data_dir,
+            num_workers=args.num_workers,
+            prefetch_buffer_size=args.prefetch_buffer_size,
+            seed=42,
+            num_epochs=num_epochs,
+        )
 
-    from jax.sharding import Mesh, PartitionSpec, NamedSharding
-    from jax.experimental.mesh_utils import create_device_mesh
     import optax
     import orbax.checkpoint as ocp
     import jax
@@ -370,19 +117,21 @@ def main(args: Args) -> None:
     import flax.nnx as nnx
     import lpips_jax
 
-    from jasmine.models.tokenizer import TokenizerMAE
-    from jasmine.models.dreamer4 import Encoder, Decoder
+    from jasmine.models.dreamer4 import build_tokenizer_model
     from jasmine.losses.frequency_loss import FocalFrequencyLoss
-    from jasmine.utils.dataloader import get_dataloader
-    from jasmine.utils.preprocess import patchify, unpatchify
+    
     from jasmine.utils.train_utils import (
         get_lr_schedule,
         count_parameters_by_component,
         print_mem_stats,
         print_compiled_memory_stats,
         print_compiled_cost_analysis,
+        build_mesh_and_sharding,
+        shard_optimizer_states,
+        build_optimizer,
+        build_checkpoint_manager,
+        restore_checkpoint_if_needed,  
     )
-
 
     jax.distributed.initialize(
         coordinator_address="localhost:1234",
@@ -403,7 +152,19 @@ def main(args: Args) -> None:
     rng = jax.random.key(args.seed)
 
     # --- Initialize model ---
-    tokenizer, rng = build_model(args, rng)
+    tokenizer, rng = build_tokenizer_model(
+        num_latents=args.num_latents,
+        image_height=args.image_height,
+        image_width=args.image_width,
+        patch_size=args.patch_size,
+        image_channels=args.image_channels,
+        enc_depth=args.enc_depth,
+        dec_depth=args.dec_depth,
+        latent_dim=args.latent_dim,
+        use_flash_attention=args.use_flash_attention,
+        dtype=args.dtype,
+        rng=rng
+    )
 
     _, params, _ = nnx.split(tokenizer, nnx.Param, ...)
     param_counts = count_parameters_by_component(params)
@@ -433,7 +194,15 @@ def main(args: Args) -> None:
     print(param_counts)
 
     # --- Initialize optimizer ---
-    optimizer = build_optimizer(tokenizer, args)
+    optimizer = build_optimizer(
+        model=tokenizer,
+        init_lr=args.init_lr,
+        max_lr=args.max_lr,
+        decay_end=args.decay_end,
+        wsd_decay_steps=args.wsd_decay_steps,
+        lr_schedule=args.lr_schedule,
+        warmup_steps=args.warmup_steps,
+    )
     del tokenizer
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
@@ -442,12 +211,20 @@ def main(args: Args) -> None:
     shard_optimizer_states(optimizer, replicated_sharding)
 
     # --- Initialize checkpoint manager ---
-    checkpoint_manager = build_checkpoint_manager(args)
+    checkpoint_manager = build_checkpoint_manager(
+        restore_ckpt=args.restore_ckpt,
+        save_ckpt=args.save_ckpt,
+        checkpoint_dir=args.ckpt_dir,
+    )
 
 
     # --- Restore checkpoint ---
     step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
-        args, checkpoint_manager, optimizer, train_iterator, val_iterator, args.restore_step
+        checkpoint_manager,
+        optimizer,
+        train_iterator,
+        val_iterator,
+        args.restore_step,
     )
 
     # LPIPS evaluator

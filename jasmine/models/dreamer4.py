@@ -754,6 +754,150 @@ class ActionEncoder(nnx.Module):
 
         return out
 
+        class MovingRMS(nnx.Module):
+    def __init__(self, momentum: float = 0.99):
+        self.momentum = momentum
+        self.rms = nnx.Variable(jnp.ones((), dtype=jnp.float32))
+
+    def __call__(self, x: jax.Array, training: bool = True) -> jax.Array:
+        if training:
+            # Update running RMS estimate: RMS = sqrt(E[x^2])
+            # For scalar loss, mean(square(x)) is just x^2
+            ms = jnp.mean(jnp.square(x))
+            self.rms.value = self.momentum * self.rms.get_value() + (1 - self.momentum) * jnp.sqrt(ms + 1e-8)
+        
+        # Normalize by stop-gradiented RMS to avoid differentiating through the moving average
+        return x / jax.lax.stop_gradient(jnp.maximum(self.rms.get_value(), 1e-8))
+
+
+class Dreamer4TokenizerMAE(nnx.Module):
+    def __init__(
+        self,
+        image_height: int,
+        image_width: int,
+        patch_size: int,
+        in_dim: int,
+        encoder_kwargs: dict,
+        decoder_kwargs: dict,
+        dtype: jnp.dtype = jnp.float32,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        self.image_height = image_height
+        self.image_width = image_width
+        self.patch_size = patch_size
+        self.in_dim = in_dim
+        self.dtype = dtype
+
+        self.encoder = Encoder(**encoder_kwargs, rngs=rngs)
+        self.decoder = Decoder(**decoder_kwargs, rngs=rngs)
+        self.mse_norm = MovingRMS()
+        self.lpips_norm = MovingRMS()
+        self.freq_norm = MovingRMS()
+
+    def __call__(self, batch: dict, training: bool = True, rngs=nnx.Rngs) -> dict:
+
+        outputs = self.mask_and_encode(batch, training, rngs=rngs)
+        z_latents = outputs['z']
+        mask = outputs['mask']
+        keep = outputs['keep']
+
+
+        recon_videos = self.decode(z_latents)
+
+        outputs = {
+            "recon": recon_videos,
+            "z": z_latents,
+            "mask": mask
+        }
+        return outputs
+
+    def mask_and_encode(self, batch: dict, training: bool = True, rngs: nnx.Rngs = None) -> dict:
+        rngs = batch.get("rng", None)
+        videos = batch["videos"]
+        B, T, H, W, C = videos.shape
+
+        patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
+        B, T, Hp, Wp, D = patches.shape
+        patches_flat = patches.reshape(B, T, Hp*Wp, D)
+
+        mae_rng = nnx.Rngs(mae=rngs) if rngs is not None else None
+
+        z_latents, (mask, keep) = self.encoder(patches_flat, rngs=mae_rng)
+        return {
+            'z': z_latents,
+            'mask': mask,
+            'keep': keep
+        }
+
+    def decode(self, z: jnp.ndarray) -> jnp.ndarray:
+        recon_patches_flat = self.decoder(z)
+        recon_videos = unpatchify(
+            recon_patches_flat, self.patch_size, self.image_height, self.image_width)
+        return recon_videos
+
+
+def build_tokenizer_model(
+    num_latents: int, 
+    image_height: int,
+    image_width: int, 
+    patch_size: int, 
+    image_channels: int, 
+    enc_depth: int, 
+    dec_depth: int, 
+    latent_dim: int, 
+    use_flash_attention: bool, 
+    dtype: jnp.dtype, 
+    rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.Array]:
+    rng, _rng = jax.random.split(rng)
+    rngs = nnx.Rngs(_rng)
+    
+    num_patches = (image_height // patch_size) * (image_width // patch_size)
+    d_patch = image_channels * patch_size ** 2
+
+    enc_kwargs = {
+        "d_model": 512, 
+        "n_latents": num_latents, 
+        "n_patches": num_patches, 
+        "n_heads": 8, 
+        "depth": enc_depth, 
+        "dropout": 0.05,
+        "d_bottleneck": latent_dim,
+        "mae_p_min": 0.0, 
+        "mae_p_max": 0.9, 
+        "time_every": 4,
+        "d_patch": d_patch, 
+        "use_flash_attention": use_flash_attention,
+        "dtype": dtype,
+    }
+    
+    dec_kwargs = {
+        "d_model": 512, 
+        "n_heads": 8, 
+        "n_patches": num_patches, 
+        "n_latents": args.num_latents, 
+        "depth": args.dec_depth,
+        "d_patch": d_patch, 
+        "dropout": 0.05, 
+        "time_every": 4,
+        "d_bottleneck": args.latent_dim,
+        "use_flash_attention": args.use_flash_attention,
+        "dtype": args.dtype,
+    }
+
+    tokenizer = Dreamer4TokenizerMAE(
+        image_height=image_height,
+        image_width=image_width,
+        patch_size=patch_size,
+        in_dim=image_channels,
+        encoder_kwargs=enc_kwargs,
+        decoder_kwargs=dec_kwargs,
+        dtype=dtype,
+        rngs=rngs,
+    )
+    return tokenizer, rng
+
+
 class Dynamics(nnx.Module):
     def __init__(
         self,
