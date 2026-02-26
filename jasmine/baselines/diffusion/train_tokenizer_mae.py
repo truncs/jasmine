@@ -81,6 +81,16 @@ class Args:
 
 def main(args: Args) -> None:
 
+    jax.distributed.initialize(
+        coordinator_address="localhost:1234",
+        num_processes=1,
+        process_id=0
+    )
+    num_devices = jax.device_count()
+    if num_devices == 0:
+        raise ValueError("No JAX devices found.")
+    print(f"Running on {num_devices} devices.")
+
     # --- Create DataLoaderIterator from dataloader ---
     train_iterator = build_dataloader(
         image_height=args.image_height,
@@ -133,16 +143,7 @@ def main(args: Args) -> None:
         restore_checkpoint_if_needed,  
     )
 
-    jax.distributed.initialize(
-        coordinator_address="localhost:1234",
-        num_processes=1,
-        process_id=0
-    )
-    num_devices = jax.device_count()
-    if num_devices == 0:
-        raise ValueError("No JAX devices found.")
-    print(f"Running on {num_devices} devices.")
-
+    
     if args.batch_size % num_devices != 0:
         raise ValueError(
             f"Global batch size {args.batch_size} must be divisible by "
