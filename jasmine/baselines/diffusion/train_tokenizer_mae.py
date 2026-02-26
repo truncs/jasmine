@@ -9,7 +9,6 @@ from typing import cast, Optional
 import jax.numpy as jnp
 import flax.nnx as nnx
 
-from jasmine.utils.dataloader import get_dataloader
 import einops
 import itertools
 import numpy as np
@@ -18,6 +17,7 @@ import tyro
 import wandb
 import grain
 
+from jasmine.utils.train_utils import build_dataloader
 
 @dataclass
 class Args:

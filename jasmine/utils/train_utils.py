@@ -6,6 +6,7 @@ import operator
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.mesh_utils import create_device_mesh
 
+from jasmine.utils.dataloader import get_dataloader
 
 def get_lr_schedule(
     lr_schedule: str,
