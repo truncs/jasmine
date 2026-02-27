@@ -353,9 +353,7 @@ if __name__ == "__main__":
         rngs=rngs,
     )
     vit_def = vit_cls()
-    vit_params = vit_def.init(jax.random.PRNGKey(0), jnp.ones((1, 224, 224, 3)))[
-        "params"
-    ]
+    vit_params = nnx.state(vit_def)
 
     dinov2_vits14 = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14")
 
