@@ -435,7 +435,6 @@ def main(args: Args) -> None:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
 
-        @partial(jax.jit, static_argnames=("shape_bt", "k_max",))
         def _sample_tau_for_step(rng, shape_bt, k_max: int,
                                  step_idx: jnp.ndarray, *, dtype=jnp.float32):
             B_, T_ = shape_bt
@@ -446,7 +445,6 @@ def main(args: Args) -> None:
             tau_idx = j_idx * (k_max // K)
             return tau, tau_idx
 
-        @partial(jax.jit, static_argnames=("shape_bt", "k_max",))
         def _sample_step_excluding_dmin(rng, shape_bt, k_max: int):
             B_, T_ = shape_bt
             emax = jnp.log2(k_max).astype(jnp.int32)
