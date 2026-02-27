@@ -341,6 +341,8 @@ if __name__ == "__main__":
     embed_dim = 384
     mlp_ratio = 4
 
+    rngs = nnx.Rngs(params=0, dropout=1)
+
     vit_cls = functools.partial(
         DinoViT,
         num_heads=num_heads,
@@ -348,6 +350,7 @@ if __name__ == "__main__":
         mlp_ratio=mlp_ratio,
         depth=12,
         img_size=224,
+        rngs=rngs,
     )
     vit_def = vit_cls()
     vit_params = vit_def.init(jax.random.PRNGKey(0), jnp.ones((1, 224, 224, 3)))[
