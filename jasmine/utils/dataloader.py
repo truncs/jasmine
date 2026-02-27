@@ -1,6 +1,5 @@
-import jax
 import numpy as np
-import grain.python as grain
+import grain
 from typing import Any, Optional
 import pickle
 
@@ -109,6 +108,7 @@ def get_dataloader(
     image_h: int,
     image_w: int,
     image_c: int,
+    num_processes: int,
     num_workers: int = 1,
     prefetch_buffer_size: int = 1,
     seed: int = 42,
@@ -120,7 +120,7 @@ def get_dataloader(
     if not array_record_paths:
         raise ValueError("array_record_paths list cannot be empty.")
 
-    num_processes = jax.process_count()
+    array_record_paths = sorted(array_record_paths)
 
     if global_batch_size % num_processes != 0:
         raise ValueError(
