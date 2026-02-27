@@ -212,6 +212,7 @@ def build_dataloader(args: Args, data_dir: str, num_workers: int, prefetch_buffe
         # The dataloader shards the dataset across all processes
         args.batch_size,
         *image_shape,
+        num_processes=jax.process_count(),
         num_workers=num_workers,
         prefetch_buffer_size=prefetch_buffer_size,
         seed=args.seed,
