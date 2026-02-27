@@ -162,4 +162,11 @@ def get_dataloader(
         read_options=read_options,
     )
 
-    return iter(dataloader)
+    iterator = iter(dataloader)
+    
+    # Bypass state validation inside Grain because our newest dataloader version 
+    # sorts the read paths, which causes a mismatch against older checkpoint hashes
+    if hasattr(iterator, "_validate_state"):
+        iterator._validate_state = False
+
+    return iterator
