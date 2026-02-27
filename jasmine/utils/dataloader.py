@@ -150,8 +150,8 @@ def get_dataloader(
     ]
 
     read_options = grain.ReadOptions(
-        prefetch_buffer_size=8,
-        num_threads=10,
+        prefetch_buffer_size=prefetch_buffer_size,
+        num_threads=0,
     )
     dataloader = grain.DataLoader(
         data_source=source,
