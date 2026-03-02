@@ -162,19 +162,18 @@ def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
         for x in os.listdir(data_dir)
         if x.endswith(".array_record")
     ]
-    grain_dataloader = get_dataloader(
+    grain_iterator = get_dataloader(
         array_record_files,
         args.seq_len,
         # NOTE: We deliberately pass the global batch size
         # The dataloader shards the dataset across all processes
         args.batch_size,
         *image_shape,
+        num_processes=jax.process_count(),
         num_workers=8,
         prefetch_buffer_size=1,
         seed=args.seed,
     )
-    initial_state = grain_dataloader._create_initial_state()
-    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
     return grain_iterator
 
 
@@ -277,7 +276,11 @@ def enable_sowing(lam: LatentActionModel) -> None:
 
 
 def main(args: Args) -> None:
-    jax.distributed.initialize()
+    jax.distributed.initialize(
+        coordinator_address="localhost:1234",
+        num_processes=1,
+        process_id=0
+    )
     num_devices = jax.device_count()
     if num_devices == 0:
         raise ValueError("No JAX devices found.")
@@ -594,5 +597,28 @@ def main(args: Args) -> None:
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    import os
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
+
+    if multiprocessing.parent_process() is not None:
+        # We are in a Grain worker process. Disable GPU to avoid deadlocks
+        # and memory issues with JAX.
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        os.environ["JAX_PLATFORMS"] = "cpu"
+        os.environ["JAX_PLATFORM_NAME"] = "cpu"
+        
+        # We also need to make sure JAX doesn't try to initialize the GPU
+        # by setting these flags.
+        from absl import flags
+        try:
+            flags.FLAGS.jax_allow_unused_gpus = True
+        except AttributeError:
+            pass
+
+    import tyro
     args = tyro.cli(Args)
     main(args)

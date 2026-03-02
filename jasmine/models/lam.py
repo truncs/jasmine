@@ -64,6 +64,7 @@ class LatentActionModel(nnx.Module):
             self.model_dim,
             self.ffn_dim,
             self.latent_dim,
+            self.num_latents,
             self.num_blocks,
             self.num_heads,
             self.dropout,
@@ -105,6 +106,7 @@ class LatentActionModel(nnx.Module):
             self.model_dim,
             self.ffn_dim,
             self.patch_token_dim,
+            self.num_latents,
             self.num_blocks,
             self.num_heads,
             self.dropout,
@@ -132,7 +134,7 @@ class LatentActionModel(nnx.Module):
         del outputs["patches"], patch_BTNP, patch_BTm1NM
 
         # --- Decode ---
-        video_recon_BTm1P = self.decoder(video_action_patches_BTm1NM)
+        _, video_recon_BTm1P = self.decoder(video_action_patches_BTm1NM)
         video_recon_BTm1P = video_recon_BTm1P.astype(jnp.float32)
         video_recon_BTm1P = nnx.sigmoid(video_recon_BTm1P)
         video_recon_BTm1P = video_recon_BTm1P.astype(self.dtype)
@@ -152,7 +154,7 @@ class LatentActionModel(nnx.Module):
         padded_patch_BTNp1P = jnp.concatenate((action_pad_BT1P, patch_BTNP), axis=2)
 
         # --- Encode ---
-        z_BTNp1L = self.encoder(padded_patch_BTNp1P)
+        _, z_BTNp1L = self.encoder(padded_patch_BTNp1P)
         # Get latent action for all future frames
         z_BTm1L = z_BTNp1L[:, 1:, 0]
 

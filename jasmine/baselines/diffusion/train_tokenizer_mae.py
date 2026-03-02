@@ -785,15 +785,28 @@ def main(args: Args) -> None:
 
 
 if __name__ == "__main__":
-    import os
     import multiprocessing
-    from absl import flags 
+    import os
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
 
     if multiprocessing.parent_process() is not None:
-        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+        # We are in a Grain worker process. Disable GPU to avoid deadlocks
+        # and memory issues with JAX.
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
         os.environ["JAX_PLATFORMS"] = "cpu"
         os.environ["JAX_PLATFORM_NAME"] = "cpu"
-        setattr(flags.FLAGS, "jax_allow_unused_gpus", True)
+        
+        # We also need to make sure JAX doesn't try to initialize the GPU
+        # by setting these flags.
+        from absl import flags
+        try:
+            flags.FLAGS.jax_allow_unused_gpus = True
+        except AttributeError:
+            pass
 
+    import tyro
     args = tyro.cli(Args)
     main(args)
