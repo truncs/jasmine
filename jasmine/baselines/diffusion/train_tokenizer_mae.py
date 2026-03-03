@@ -492,7 +492,7 @@ def main(args: Args) -> None:
         outputs["recon"] = outputs["recon"].astype(jnp.float32)
 
         # Get the latent target or the input
-        target = model.target(input['videos'])
+        target = model.target(inputs['videos'])
         
         # Mask handling
         mask = outputs["mask"] # (B, T, Np, 1) where True means masked
