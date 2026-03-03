@@ -162,7 +162,6 @@ class Dreamer4TokenizerMAE(nnx.Module):
         outputs = self.mask_and_encode(batch, training, rngs=rngs)
         z_latents = outputs['z']
         mask = outputs['mask']
-        patches = outputs['patches']
 
         recon_videos = self.decode(z_latents)
 
@@ -170,7 +169,6 @@ class Dreamer4TokenizerMAE(nnx.Module):
             "recon": recon_videos,
             "z": z_latents,
             "mask": mask,
-            "patches": patches,
         }
         return outputs
 
