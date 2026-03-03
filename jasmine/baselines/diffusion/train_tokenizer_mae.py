@@ -502,7 +502,7 @@ def main(args: Args) -> None:
         # Convert patch mask to pixel mask: (B, T, Np, 1) -> (B, T, H, W, 1)
         pixel_mask = mask.reshape(mask.shape[0], mask.shape[1], hn, wn, 1)
 
-        if model.latent_model:
+        if model.is_latent_model:
             vis_mask = 1.0 - pixel_mask
         else:
             pixel_mask = jnp.repeat(pixel_mask, P, axis=2)
@@ -525,7 +525,7 @@ def main(args: Args) -> None:
         })
 
         # LPIPS and Frequency loss for non latent models
-        if not model.latent_model:
+        if not model.is_latent_model:
             # Masked LPIPS
             # We mask both gt and recon so that masked areas match perfectly (0 loss contribution)
             target_masked = target * vis_mask
