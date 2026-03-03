@@ -16,6 +16,7 @@ import numpy as np
 import dm_pix as pix
 import jax
 import jax.numpy as jnp
+import torch
 import tyro
 import wandb
 import grain
@@ -24,6 +25,7 @@ import lpips_jax
 
 from jasmine.models.tokenizer import TokenizerMAE
 from jasmine.models.dreamer4 import Encoder, Decoder
+from jasmine.models.dino import DinoViT, load_vit_params
 from jasmine.losses.frequency_loss import FocalFrequencyLoss
 from jasmine.utils.dataloader import get_dataloader
 from jasmine.utils.preprocess import patchify, unpatchify
@@ -61,6 +63,7 @@ class Args:
     lr_schedule: str = "wsd"  # supported options: wsd, cos
     warmup_steps: int = 10000
     # Tokenizer
+    is_latent_model: bool = False
     model_dim: int = 512
     ffn_dim: int = 2048
     latent_dim: int = 32
@@ -123,6 +126,7 @@ class Dreamer4TokenizerMAE(nnx.Module):
         encoder_kwargs: dict,
         decoder_kwargs: dict,
         dtype: jnp.dtype = jnp.float32,
+        is_latent_model: bool = False,
         *,
         rngs: nnx.Rngs,
     ):
@@ -137,21 +141,36 @@ class Dreamer4TokenizerMAE(nnx.Module):
         self.mse_norm = MovingRMS()
         self.lpips_norm = MovingRMS()
         self.freq_norm = MovingRMS()
+        self.is_latent_model = is_latent_model
+
+        if self.is_latent_model:
+            self.latent_model = DinoViT(
+                num_heads=6,
+                embed_dim=384,
+                mlp_ratio=4,
+                depth=12,
+                img_size=image_height,
+                rngs=rngs
+            )
+            nnx_params = nnx.state(self.latent_model)
+            torch_params = torch.hub.load('facebookresearch/dinov2", "dinov2_vits14')
+            params = load_vit_params(nnx_params, torch_params)
+            nnx.update(self.latent_model, params)
 
     def __call__(self, batch: dict, training: bool = True, rngs=nnx.Rngs) -> dict:
 
         outputs = self.mask_and_encode(batch, training, rngs=rngs)
         z_latents = outputs['z']
         mask = outputs['mask']
-        keep = outputs['keep']
-
+        patches = outputs['patches']
 
         recon_videos = self.decode(z_latents)
 
         outputs = {
             "recon": recon_videos,
             "z": z_latents,
-            "mask": mask
+            "mask": mask,
+            "patches": patches,
         }
         return outputs
 
@@ -160,7 +179,7 @@ class Dreamer4TokenizerMAE(nnx.Module):
         videos = batch["videos"]
         B, T, H, W, C = videos.shape
 
-        patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
+        patches = self.target(videos)
         B, T, Hp, Wp, D = patches.shape
         patches_flat = patches.reshape(B, T, Hp*Wp, D)
 
@@ -170,23 +189,40 @@ class Dreamer4TokenizerMAE(nnx.Module):
         return {
             'z': z_latents,
             'mask': mask,
-            'keep': keep
+            'keep': keep,
         }
 
     def decode(self, z: jnp.ndarray) -> jnp.ndarray:
         recon_patches_flat = self.decoder(z)
-        recon_videos = unpatchify(
-            recon_patches_flat, self.patch_size, self.image_height, self.image_width)
+        if self.is_latent_model:
+            recon_videos = recon_patches_flat
+        else:
+            recon_videos = unpatchify(
+                recon_patches_flat, self.patch_size, self.image_height, self.image_width)
         return recon_videos
+
+    def target(self, videos: jnp.ndarray) -> jnp.ndarray:
+        B, T, H, W, C = videos.shape
+        if self.is_latent_model:
+            videos = videos.reshape(B*T, H, W, C)
+            patches = jax.lax.stop_gradient(self.latent_model(videos, training=False))
+            patches = patches.reshape(B, T, *patches.shape[1:])
+        else:
+            patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
+
+        return patches
 
 
 def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
-    
-    num_patches = (args.image_height // args.patch_size) * (args.image_width // args.patch_size)
-    d_patch = args.image_channels * args.patch_size ** 2
 
+    if args.is_latent_model:
+        d_patch = args.image_channels
+    else:
+        d_patch = args.image_channels * args.patch_size ** 2 
+
+    num_patches = (args.image_height // args.patch_size) * (args.image_width // args.patch_size)        
     enc_kwargs = {
         "d_model": 512, 
         "n_latents": args.num_latents, 
@@ -451,11 +487,15 @@ def main(args: Args) -> None:
     def tokenizer_loss_fn(
         model: Dreamer4TokenizerMAE, patch_size: int, inputs: dict, lpips_evaluator, training: bool = False
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
+        metrics = {}
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
         outputs = model(inputs, training=training)
         outputs["recon"] = outputs["recon"].astype(jnp.float32)
 
+        # Get the latent target or the input
+        target = model.target(inputs)
+        
         # Mask handling
         mask = outputs["mask"] # (B, T, Np, 1) where True means masked
         P = patch_size
@@ -463,50 +503,65 @@ def main(args: Args) -> None:
         hn, wn = H // P, W // P
         # Convert patch mask to pixel mask: (B, T, Np, 1) -> (B, T, H, W, 1)
         pixel_mask = mask.reshape(mask.shape[0], mask.shape[1], hn, wn, 1)
-        pixel_mask = jnp.repeat(pixel_mask, P, axis=2)
-        pixel_mask = jnp.repeat(pixel_mask, P, axis=3)
-        pixel_mask = pixel_mask.astype(jnp.float32)
-        vis_mask = 1.0 - pixel_mask
+
+        if model.latent_model:
+            vis_mask = 1.0 - pixel_mask
+        else:
+            pixel_mask = jnp.repeat(pixel_mask, P, axis=2)
+            pixel_mask = jnp.repeat(pixel_mask, P, axis=3)
+            pixel_mask = pixel_mask.astype(jnp.float32)
+            vis_mask = 1.0 - pixel_mask
+            target = unpatchify(target, patch_size, H, W)
 
         # Masked MSE
-        sq_err = jnp.square(gt - outputs["recon"]) * vis_mask
-        mse = sq_err.sum() / jnp.maximum(vis_mask.sum() * gt.shape[-1], 1.0)
-
-        # Masked LPIPS
-        # We mask both gt and recon so that masked areas match perfectly (0 loss contribution)
-        gt_masked = gt * vis_mask
-        recon_masked = outputs["recon"] * vis_mask
-        
-        lpips = lpips_evaluator(jax.lax.collapse(gt_masked, 0, 2),
-                                jax.lax.collapse(recon_masked, 0, 2)).mean()
-
-        # Frequency Loss
-        freq_loss = freq_loss_fn(outputs["recon"], gt)
+        sq_err = jnp.square(target - outputs["recon"]) * vis_mask
+        mse = sq_err.sum() / jnp.maximum(vis_mask.sum() * target.shape[-1], 1.0)
 
         # RMS Normalization
         normalized_mse = model.mse_norm(mse, training=training)
-        normalized_lpips = model.lpips_norm(lpips, training=training)
-        normalized_freq = model.freq_norm(freq_loss, training=training)
 
-        gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
-        recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-        psnr = jnp.asarray(pix.psnr(gt_clipped, recon)).mean()
-        ssim = jnp.asarray(pix.ssim(gt_clipped, recon)).mean()
+        metrics.update({
+            'mse': mse,
+            'normalized_mse': normalized_mse,
+            'mse_rms': model.mse_norm.rms.get_value(),
+        })
 
-        loss = normalized_mse + 0.2 * normalized_lpips + normalized_freq
+        # LPIPS and Frequency loss for non latent models
+        if not model.latent_model:
+            # Masked LPIPS
+            # We mask both gt and recon so that masked areas match perfectly (0 loss contribution)
+            target_masked = target * vis_mask
+            recon_masked = outputs["recon"] * vis_mask
 
-        metrics = dict(
-            mse=mse,
-            lpips=lpips,
-            normalized_mse=normalized_mse,
-            normalized_lpips=normalized_lpips,
-            mse_rms=model.mse_norm.rms.get_value(),
-            lpips_rms=model.lpips_norm.rms.get_value(),
-            frequency_loss=freq_loss,
-            psnr=psnr,
-            ssim=ssim,
-            loss=loss,
-        )
+            lpips = lpips_evaluator(jax.lax.collapse(target_masked, 0, 2),
+                                jax.lax.collapse(recon_masked, 0, 2)).mean()
+
+            freq_loss = freq_loss_fn(outputs["recon"], target)
+
+            normalized_lpips = model.lpips_norm(lpips, training=training)
+            normalized_freq = model.freq_norm(freq_loss, training=training)
+
+            loss = normalized_mse + 0.2 * normalized_lpips + normalized_freq
+            gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
+            recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
+            psnr = jnp.asarray(pix.psnr(gt_clipped, recon)).mean()
+            ssim = jnp.asarray(pix.ssim(gt_clipped, recon)).mean()
+
+            metrics.update({
+                'lpips': lpips,
+                'normalized_lpips': normalized_lpips,
+                'lpips_rms': model.lpips_norm.rms.get_value(),
+                'frequency_loss': freq_loss,
+                'psnr': psnr,
+                'ssim': ssim,
+            })
+
+        else:
+            loss = normalized_mse
+
+        metrics.update({
+            'loss': loss
+        })
 
         return loss, (outputs["recon"], metrics)
 
