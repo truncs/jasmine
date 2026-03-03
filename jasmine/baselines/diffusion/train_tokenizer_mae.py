@@ -256,6 +256,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
         image_width=args.image_width,
         patch_size=args.patch_size,
         in_dim=args.image_channels,
+        is_latent_model=args.is_latent_model,
         encoder_kwargs=enc_kwargs,
         decoder_kwargs=dec_kwargs,
         dtype=args.dtype,
