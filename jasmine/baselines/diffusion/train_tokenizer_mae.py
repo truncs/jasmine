@@ -153,7 +153,7 @@ class Dreamer4TokenizerMAE(nnx.Module):
                 rngs=rngs
             )
             nnx_params = nnx.state(self.latent_model)
-            torch_params = torch.hub.load('facebookresearch/dinov2", "dinov2_vits14')
+            torch_params = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
             params = load_vit_params(nnx_params, torch_params)
             nnx.update(self.latent_model, params)
 
