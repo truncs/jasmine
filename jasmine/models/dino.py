@@ -275,7 +275,6 @@ class DinoViT(nnx.Module):
         num_pos_tokens: int = 1369,
         num_cls_tokens: int = 1,
         num_storage_tokens: int = 4,
-        storage_tokens: bool = True,
         depth: int = 12,
         num_heads: int = 6,
         mlp_ratio: float = 4.0,
@@ -294,7 +293,6 @@ class DinoViT(nnx.Module):
         self.num_pos_tokens = num_pos_tokens
         self.num_cls_tokens = num_cls_tokens
         self.num_storage_tokens = num_storage_tokens
-        self.storage_tokens = storage_tokens
         self.depth = depth
         self.num_heads = num_heads
         self.mlp_ratio = mlp_ratio
@@ -309,7 +307,7 @@ class DinoViT(nnx.Module):
         )
         self.cls_token = nnx.Param(jnp.zeros((1, 1, embed_dim)))
 
-        if storage_tokens:
+        if self.num_storage_tokens > 0:
             self.storage_tokens = nnx.Param(jnp.zeros((1, num_storage_tokens, embed_dim)))
 
         blocks = []
@@ -379,7 +377,7 @@ class DinoViT(nnx.Module):
         cls_token = jnp.broadcast_to(self.cls_token.value, (x.shape[0], *self.cls_token.value.shape[1:]))
         x = jnp.concatenate((cls_token, x), axis=1)
 
-        if self.storage_tokens:
+        if self.num_storage_tokens > 0:
             storage_token = jnp.broadcast_to(self.storage_token.value, (x.shape[0], *self.storage_token.value.shape[1:]))
             x = jnp.concatenate((x[:, :1], storage_token, x[:, 1:]), axis=1)
 
@@ -394,7 +392,7 @@ class DinoViT(nnx.Module):
 
         x_norm = self.norm(x)
 
-        if self.storage_tokens:
+        if self.num_storage_tokens > 0:
             return {
                 "x_norm_clstoken": x_norm[:, 0],
                 "x_norm_regtokens": x_norm[:, 1:self.num_storage_tokens + 1],
