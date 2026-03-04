@@ -216,15 +216,17 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
 
     if args.is_latent_model:
         d_patch = args.image_channels
+        d_model = d_patch
     else:
         d_patch = args.image_channels * args.patch_size ** 2 
+        d_model = args.model_dim
 
     num_patches = (args.image_height // args.patch_size) * (args.image_width // args.patch_size)        
     enc_kwargs = {
-        "d_model": 512, 
+        "d_model": d_model, 
         "n_latents": args.num_latents, 
         "n_patches": num_patches, 
-        "n_heads": 8, 
+        "n_heads": args.num_heads, 
         "depth": args.enc_depth, 
         "dropout": 0.05,
         "d_bottleneck": args.latent_dim,
@@ -237,8 +239,8 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
     }
     
     dec_kwargs = {
-        "d_model": 512, 
-        "n_heads": 8, 
+        "d_model": d_model, 
+        "n_heads": args.num_heads, 
         "n_patches": num_patches, 
         "n_latents": args.num_latents, 
         "depth": args.dec_depth,
