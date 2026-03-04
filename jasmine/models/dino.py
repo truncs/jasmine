@@ -275,7 +275,7 @@ class DinoViT(nnx.Module):
         num_pos_tokens: int = 1369,
         num_cls_tokens: int = 1,
         num_register_tokens: int = 4,
-        storage_tokens: bool = False,
+        storage_tokens: bool = True,
         depth: int = 12,
         num_heads: int = 6,
         mlp_ratio: float = 4.0,
@@ -308,7 +308,6 @@ class DinoViT(nnx.Module):
             rngs=rngs,
         )
         self.cls_token = nnx.Param(jnp.zeros((1, 1, embed_dim)))
-        self.pos_embed = nnx.Param(jnp.zeros((1, num_pos_tokens + num_cls_tokens, embed_dim)))
 
         if storage_tokens:
             self.storage_token = nnx.Param(jnp.zeros((1, num_register_tokens, embed_dim)))
@@ -379,9 +378,6 @@ class DinoViT(nnx.Module):
         x = self.patch_embed(x)
         cls_token = jnp.broadcast_to(self.cls_token.value, (x.shape[0], *self.cls_token.value.shape[1:]))
         x = jnp.concatenate((cls_token, x), axis=1)
-
-        pos_embed = self.pos_embed.value
-        x = x + self._interpolate_pos_encoding(x, self.img_size, self.img_size, pos_embed)
 
         if self.storage_tokens:
             storage_token = jnp.broadcast_to(self.storage_token.value, (x.shape[0], *self.storage_token.value.shape[1:]))
