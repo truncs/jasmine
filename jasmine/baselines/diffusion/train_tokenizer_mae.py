@@ -786,7 +786,7 @@ def main(args: Args) -> None:
                         wn = W // args.patch_size
                         gt_seq = gt_seq[0]
                         gt_seq = gt_seq.reshape(T, hn, wn, -1)
-                        recon_seq = recon_seq.reshape(T, hn, wn, -1)
+                        recon_seq = recon[0].reshape(T, hn, wn, -1)
 
                     comparison_seq = compare_seq(gt_seq, recon_seq, args.is_latent_model)
                     
