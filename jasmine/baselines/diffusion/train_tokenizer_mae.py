@@ -25,7 +25,7 @@ import lpips_jax
 
 from jasmine.models.tokenizer import TokenizerMAE
 from jasmine.models.dreamer4 import Encoder, Decoder
-from jasmine.models.dino import DinoViT, load_vit_params
+from jasmine.models.dino import DinoViT, load_vit_params, DINOV3_S_URL
 from jasmine.losses.frequency_loss import FocalFrequencyLoss
 from jasmine.utils.dataloader import get_dataloader
 from jasmine.utils.preprocess import patchify, unpatchify
@@ -64,6 +64,7 @@ class Args:
     warmup_steps: int = 10000
     # Tokenizer
     is_latent_model: bool = False
+    dino_repo_dir: str = '/zfs/aditya/workspace/dinov3'
     model_dim: int = 512
     ffn_dim: int = 2048
     latent_dim: int = 32
@@ -145,15 +146,12 @@ class Dreamer4TokenizerMAE(nnx.Module):
 
         if self.is_latent_model:
             self.latent_model = DinoViT(
-                num_heads=6,
-                embed_dim=384,
-                mlp_ratio=4,
-                depth=12,
                 img_size=image_height,
                 rngs=rngs
             )
             nnx_params = nnx.state(self.latent_model)
-            torch_params = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
+            torch_params = torch.hub.load(
+                args.dino_repo_dir, 'dinov3_vits16', source='local', weights=DINOV3_S_URL)
             params = load_vit_params(nnx_params, torch_params)
             nnx.update(self.latent_model, params)
 

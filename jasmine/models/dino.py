@@ -1,13 +1,15 @@
 import re
 import functools
+import math
 
 from flax import nnx
-from functools import partial
-from typing import Type
 import jax
 import jax.numpy as jnp
 import numpy as onp
 import torch
+
+
+DINOV3_S_URL = 'https://dinov3.llamameta.net/dinov3_vits16/dinov3_vits16_pretrain_lvd1689m-08c60483.pth?Policy=eyJTdGF0ZW1lbnQiOlt7InVuaXF1ZV9oYXNoIjoiNnRjenRmNWI2eWhxeGNnZ2lkeXo5cThyIiwiUmVzb3VyY2UiOiJodHRwczpcL1wvZGlub3YzLmxsYW1hbWV0YS5uZXRcLyoiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3NTU0NTc3OTl9fX1dfQ__&Signature=SgxoGnoHPC3%7EawZUdsdBY-gdSLsiqWRJcDnAk0dPGsYOjc-aFycl5wIVo645aomnqAc7VOTuobVUx6thud1noEGDwtlbRnQvNMRx2cbkZVGnzhM-F9mZWCpoAAfbrIH6FBl8Tpa7Z77xxafyXMH4S8BzPrp0dgY1tqJJzVkLtH8e2N%7E%7EBbwFJkOGwZag06Q4ot0CfUxRPz3jtBj7jDbQVnRu7cwAckM6-i1rAODokA1IwolpXHToEPFbtLHWHO%7EyEpyWpvu9RT4QlN461hSxFD9nl-NyBsV%7EOju4w2BCJCYjjo2C1s3eH6PjqUp7uZN6xrvGWtHuN1wCrTFnA5vL9Q__&Key-Pair-Id=K15QRJLYKIFSLZ&Download-Request-ID=1312754137084299'
 
 
 def load_vit_params(params_jax: dict, vit_pt: torch.nn.Module):
@@ -18,7 +20,7 @@ def load_vit_params(params_jax: dict, vit_pt: torch.nn.Module):
         "cls_token",
         "pos_embed",
         "mask_token",
-        "register_tokens",
+        "storage_tokens",
     }
     dinov2_params_flat = []
     for path, param in jax_params_flat:
@@ -54,8 +56,24 @@ def load_vit_params(params_jax: dict, vit_pt: torch.nn.Module):
     return jax.tree_util.tree_unflatten(jax_param_pytree, dinov2_params_flat)
 
 
+def rope_rotate_half(x: jnp.array) -> jnp.array:
+    # x:   [ x0  x1  x2  x3  x4  x5]
+    # out: [-x3 -x4 -x5  x0  x1  x2]
+    x1, x2 = jnp.split(x, 2, axis=-1)
+    return jnp.concat([-x2, x1], axis=-1)
+
+
+def rope_apply(x: jnp.array, sin: jnp.array, cos: jnp.array) -> jnp.array:
+    # x:   [..., D], eg [x0,     x1,   x2,   x3,   x4,   x5]
+    # sin: [..., D], eg [sin0, sin1, sin2, sin0, sin1, sin2]
+    # cos: [..., D], eg [cos0, cos1, cos2, cos0, cos1, cos2]
+    return (x * cos) + (rope_rotate_half(x) * sin)
+
+
 class Attention(nnx.Module):
-    def __init__(self, embed_dim: int = 384, num_heads: int = 8, attn_bias: bool = True, attn_drop_rate: float = 0.0, proj_bias: bool = True, proj_drop_rate: float = 0.0, *, rngs: nnx.Rngs):
+    def __init__(self, embed_dim: int = 384, num_heads: int = 8,
+                 attn_bias: bool = True, attn_drop_rate: float = 0.0,
+                 proj_bias: bool = True, proj_drop_rate: float = 0.0, *, rngs: nnx.Rngs):
         self.num_heads = num_heads
         self.attn_bias = attn_bias
         self.attn_drop_rate = attn_drop_rate
@@ -68,7 +86,29 @@ class Attention(nnx.Module):
         self.proj = nnx.Linear(embed_dim, embed_dim, use_bias=proj_bias, rngs=rngs)
         self.proj_drop = nnx.Dropout(rate=proj_drop_rate, rngs=rngs)
 
-    def __call__(self, x, training: bool = False):
+    def _apply_rope(self, q, k, rope):
+        # All operations will use the dtype of rope,
+        # the output is cast back to the dtype of q and k
+        q_dtype = q.dtype
+        k_dtype = k.dtype
+        sin, cos = rope
+        rope_dtype = sin.dtype
+        q = jnp.astype(q, rope_dtype)
+        k = jnp.astype(k, rope_dtype)
+        N = q.shape[-2]
+        prefix = N - sin.shape[-2]
+        assert prefix >= 0
+        q_prefix = q[:, :, :prefix, :]
+        q = rope_apply(q[:, :, prefix:, :], sin, cos)  # [B, head, hw, D//head]
+        q = jnp.concat((q_prefix, q), axis=-2)  # [B, head, N, D//head]
+        k_prefix = k[:, :, :prefix, :]
+        k = rope_apply(k[:, :, prefix:, :], sin, cos)  # [B, head, hw, D//head]
+        k = jnp.concat((k_prefix, k), axis=-2)  # [B, head, N, D//head]
+        q = jnp.astype(q, q_dtype)
+        k = jnp.astype(k, k_dtype)
+        return q, k
+        
+    def __call__(self, x, rope=None, training: bool = False):
         B, N, C = x.shape
         assert (
             C == self.embed_dim
@@ -78,6 +118,9 @@ class Attention(nnx.Module):
         qkv = jnp.transpose(qkv, (2, 0, 3, 1, 4))
 
         q, k, v = tuple(qkv)
+
+        if rope is not None:
+            q, k = self._apply_rope(q, k, rope)
 
         # Attention matrix: (B, H, N, N)
         attn = q @ k.transpose((0, 1, 3, 2)) / jnp.sqrt(C // self.num_heads)
@@ -197,10 +240,12 @@ class Block(nnx.Module):
         self.ls2 = LayerScale(embed_dim, rngs=rngs)
         self.drop_path2 = DropPath(drop_path_rate, rngs=rngs)
 
-    def __call__(self, x: jnp.ndarray, training: bool = False) -> jnp.ndarray:
+    def __call__(self, x: jnp.ndarray, rope: jnp.ndarray = None,
+                 training: bool = False) -> jnp.ndarray:
+
         def attn_residual_func(x: jnp.ndarray) -> jnp.ndarray:
             x = self.norm1(x)
-            x = self.attn(x, training=training)
+            x = self.attn(x, rope=rope, training=training)
             x = self.ls1(x)
             return x
 
@@ -211,10 +256,10 @@ class Block(nnx.Module):
             return x
 
         if training:
-            x = x + self.drop_path1(attn_residual_func(x), deterministic=not training)
+            x = x + self.drop_path1(attn_residual_func(x, rope), deterministic=not training)
             x = x + self.drop_path2(ffn_residual_func(x), deterministic=not training)
         else:
-            x = x + attn_residual_func(x)
+            x = x + attn_residual_func(x, rope)
             x = x + ffn_residual_func(x)
 
         return x
@@ -223,14 +268,14 @@ class Block(nnx.Module):
 class DinoViT(nnx.Module):
     def __init__(
         self,
-        img_size: int = 224,
+        img_size: int = 256,
         in_channels: int = 3,
-        patch_size: int = 14,
+        patch_size: int = 16,
         embed_dim: int = 384,
         num_pos_tokens: int = 1369,
         num_cls_tokens: int = 1,
         num_register_tokens: int = 4,
-        register_tokens: bool = False,
+        storage_tokens: bool = False,
         depth: int = 12,
         num_heads: int = 6,
         mlp_ratio: float = 4.0,
@@ -249,7 +294,7 @@ class DinoViT(nnx.Module):
         self.num_pos_tokens = num_pos_tokens
         self.num_cls_tokens = num_cls_tokens
         self.num_register_tokens = num_register_tokens
-        self.register_tokens = register_tokens
+        self.storage_tokens = storage_tokens
         self.depth = depth
         self.num_heads = num_heads
         self.mlp_ratio = mlp_ratio
@@ -265,8 +310,8 @@ class DinoViT(nnx.Module):
         self.cls_token = nnx.Param(jnp.zeros((1, 1, embed_dim)))
         self.pos_embed = nnx.Param(jnp.zeros((1, num_pos_tokens + num_cls_tokens, embed_dim)))
 
-        if register_tokens:
-            self.register_token = nnx.Param(jnp.zeros((1, num_register_tokens, embed_dim)))
+        if storage_tokens:
+            self.storage_token = nnx.Param(jnp.zeros((1, num_register_tokens, embed_dim)))
 
         blocks = []
         for i in range(depth):
@@ -306,6 +351,25 @@ class DinoViT(nnx.Module):
 
         return jnp.concatenate((class_pos_embed[None], patch_pos_embed), axis=1).astype(previous_dtype)
 
+    def _get_rope_params(self, H, W, base, D_head, dtype):
+        periods = base ** (
+            2 * jnp.arange(D_head // 4, dtype=dtype) / (D_head // 2)
+            )  # [D//4]
+
+        coords_h = jnp.arange(0.5, H, dtype=dtype) / H  # [H]
+        coords_w = jnp.arange(0.5, W, dtype=dtype) / W  # [W]
+
+        coords = jnp.stack(jnp.meshgrid(coords_h, coords_w, indexing="ij"), axis=-1)  # [H, W, 2]
+        coords = coords.reshape(-1, 2)
+        coords = 2.0 * coords - 1.0  # Shift range [0, 1] to [-1, +1]
+        angles = 2 * math.pi * coords[:, :, None] / periods[None, None, :]  # [HW, 2, D//4]
+        angles = angles.reshape(-1, D_head // 2)
+        angles = jnp.tile(angles, 2)  # [HW, D]
+        cos = jnp.cos(angles)  # [HW, D]
+        sin = jnp.sin(angles)  # [HW, D]
+
+        return (sin, cos)  # 2 * [HW, D]
+
     def __call__(self, x, training: bool = False):
         B, H, W, C = x.shape
         assert H == W == self.img_size, "x size must be (B, {}, {}, {})".format(
@@ -319,20 +383,26 @@ class DinoViT(nnx.Module):
         pos_embed = self.pos_embed.value
         x = x + self._interpolate_pos_encoding(x, self.img_size, self.img_size, pos_embed)
 
-        if self.register_tokens:
-            register_token = jnp.broadcast_to(self.register_token.value, (x.shape[0], *self.register_token.value.shape[1:]))
-            x = jnp.concatenate((x[:, :1], register_token, x[:, 1:]), axis=1)
+        if self.storage_tokens:
+            storage_token = jnp.broadcast_to(self.storage_token.value, (x.shape[0], *self.storage_token.value.shape[1:]))
+            x = jnp.concatenate((x[:, :1], storage_token, x[:, 1:]), axis=1)
 
+        w0 = W // self.patch_size
+        h0 = H // self.patch_size
+            
+        rope = self._get_rope_params(h0, w0, 100, self.embed_dim // self.num_heads,
+                                     x.dtype)
+            
         for block in self.blocks:
-            x = block(x, training=training)
+            x = block(x, rope=rope, training=training)
 
         x_norm = self.norm(x)
 
-        if self.register_tokens:
+        if self.storage_tokens:
             return {
                 "x_norm_clstoken": x_norm[:, 0],
-                "x_norm_regtokens": x_norm[:, 1 : self.num_register_tokens + 1],
-                "x_norm_patchtokens": x_norm[:, self.num_register_tokens + 1 :],
+                "x_norm_regtokens": x_norm[:, 1:self.num_storage_tokens + 1],
+                "x_norm_patchtokens": x_norm[:, self.num_storage_tokens + 1:],
                 "x_prenorm": x,
             }
         else:
