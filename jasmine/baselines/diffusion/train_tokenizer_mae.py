@@ -215,7 +215,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
     rngs = nnx.Rngs(_rng)
 
     if args.is_latent_model:
-        d_patch = args.image_channels
+        d_patch = args.model_dim
         d_model = d_patch
     else:
         d_patch = args.image_channels * args.patch_size ** 2 
@@ -223,29 +223,29 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
 
     num_patches = (args.image_height // args.patch_size) * (args.image_width // args.patch_size)        
     enc_kwargs = {
-        "d_model": d_model, 
-        "n_latents": args.num_latents, 
-        "n_patches": num_patches, 
-        "n_heads": args.num_heads, 
-        "depth": args.enc_depth, 
+        "d_model": d_model,
+        "n_latents": args.num_latents,
+        "n_patches": num_patches,
+        "n_heads": args.num_heads,
+        "depth": args.enc_depth,
         "dropout": 0.05,
         "d_bottleneck": args.latent_dim,
-        "mae_p_min": 0.0, 
-        "mae_p_max": 0.9, 
+        "mae_p_min": 0.0,
+        "mae_p_max": 0.9,
         "time_every": 4,
-        "d_patch": d_patch, 
+        "d_patch": d_patch,
         "use_flash_attention": args.use_flash_attention,
         "dtype": args.dtype,
     }
     
     dec_kwargs = {
-        "d_model": d_model, 
-        "n_heads": args.num_heads, 
-        "n_patches": num_patches, 
-        "n_latents": args.num_latents, 
+        "d_model": d_model,
+        "n_heads": args.num_heads,
+        "n_patches": num_patches,
+        "n_latents": args.num_latents,
         "depth": args.dec_depth,
-        "d_patch": d_patch, 
-        "dropout": 0.05, 
+        "d_patch": d_patch,
+        "dropout": 0.05,
         "time_every": 4,
         "d_bottleneck": args.latent_dim,
         "use_flash_attention": args.use_flash_attention,
