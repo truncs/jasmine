@@ -522,6 +522,7 @@ class Encoder(nnx.Module):
         mae_p_min: float = 0.0,
         mae_p_max: float = 0.9,
         use_flash_attention: bool = False,
+        is_latent_model: bool = True,
         dtype: Any = jnp.float32,
         *,
         rngs: nnx.Rngs,
@@ -534,6 +535,7 @@ class Encoder(nnx.Module):
         self.mae_p_min = mae_p_min
         self.mae_p_max = mae_p_max
         self.dtype = dtype
+        self.is_latent_model = is_latent_model
         
         # We need in_features for nnx.Linear.
         # If d_patch is None, we are in trouble unless we use lazy.
@@ -643,6 +645,7 @@ class Decoder(nnx.Module):
         time_every: int = 4,
         latents_only_time: bool = True,
         use_flash_attention: bool = False,
+        is_latent_model: bool = True,
         dtype: Any = jnp.float32,
         *,
         rngs: nnx.Rngs,
@@ -658,6 +661,7 @@ class Decoder(nnx.Module):
         self.time_every = time_every
         self.latents_only_time = latents_only_time
         self.use_flash_attention = use_flash_attention
+        self.is_latent_model = is_latent_model
         self.dtype = dtype
         
         if d_bottleneck is None:
@@ -712,7 +716,10 @@ class Decoder(nnx.Module):
         
         # 6) Prediction head over the patch-query slice
         x_patches = x[:, :, N_l:, :]                         # (B, T, Np, D)
-        pred_btnd = nnx.sigmoid(self.patch_head(x_patches))  # (B,T,Np,D_patch)
+        if self.is_latent_model:
+            pred_btnd = self.patch_head(x_patches)  # (B,T,Np,D_patch)
+        else:
+            pred_btnd = nnx.sigmoid(self.patch_head(x_patches))  # (B,T,Np,D_patch)
         return pred_btnd
 
 class ActionEncoder(nnx.Module):

@@ -16,6 +16,7 @@ import numpy as np
 import dm_pix as pix
 import jax
 import jax.numpy as jnp
+import sklearn
 import torch
 import tyro
 import wandb
@@ -36,6 +37,29 @@ from jasmine.utils.train_utils import (
     print_compiled_memory_stats,
     print_compiled_cost_analysis,
 )
+
+
+def get_pca_features(features):
+    pca = sklearn.decomposition.PCA(n_components=3)
+    pca.fit(features)
+
+    pca_features = pca.transform(features)
+    pca_features = (pca_features - pca_features.min()) / (
+        pca_features.max() - pca_features.min())
+    pca_features = pca_features * 255
+    return pca_features
+
+
+def compare_seq(gt, recon, is_latent_model):
+    if is_latent_model:
+        gt = get_pca_features(gt)
+        recon = get_pca_features(recon)
+
+    comparison_seq = jnp.concatenate((gt, recon), axis=1)
+
+    if not is_latent_model:
+        comparison_seq = comparison_seq * 255.0
+    return einops.rearrange(comparison_seq, "t h w c -> h (t w) c")
 
 
 @dataclass
@@ -235,6 +259,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
         "time_every": 4,
         "d_patch": d_patch,
         "use_flash_attention": args.use_flash_attention,
+        "is_latent_model": args.is_latent_model,
         "dtype": args.dtype,
     }
     
@@ -249,6 +274,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
         "time_every": 4,
         "d_bottleneck": args.latent_dim,
         "use_flash_attention": args.use_flash_attention,
+        "is_latent_model": args.is_latent_model,
         "dtype": args.dtype,
     }
 
@@ -751,11 +777,19 @@ def main(args: Args) -> None:
                     wandb.log(log_dict)
                 if step % args.log_image_interval == 0:
                     gt_seq = batch["videos"][0].astype(jnp.float32) / 255.0
-                    recon_seq = recon[0].clip(0, 1)
-                    comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
-                    comparison_seq = einops.rearrange(
-                        comparison_seq * 255, "t h w c -> h (t w) c"
-                    )
+                    if not args.is_latent_model:
+                        recon_seq = recon[0].clip(0, 1)
+                    else:
+                        T, H, W, C = gt_seq.shape
+                        gt_seq = optimizer.model.target(gt_seq)
+                        hn = H // args.patch_size
+                        wn = W // args.patch_size
+
+                        gt_seq = gt_seq.reshape(T, hn, wn, -1)
+                        recon_seq = recon_seq.reshape(T, hn, wn, -1)
+
+                    comparison_seq = compare_seq(gt_seq, recon_seq, args.is_latent_model)
+                    
                     if val_results and step % args.val_interval == 0:
                         val_results["gt_seq_val"] = (
                             val_results["gt_batch"]["videos"][0].astype(jnp.float32)
