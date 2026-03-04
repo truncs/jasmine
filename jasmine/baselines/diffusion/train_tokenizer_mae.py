@@ -506,13 +506,14 @@ def main(args: Args) -> None:
 
         if model.is_latent_model:
             vis_mask = 1.0 - pixel_mask
+            target = target.reshape(target.shape[0], target.shape[1], hn, wn, -1)
         else:
             pixel_mask = jnp.repeat(pixel_mask, P, axis=2)
             pixel_mask = jnp.repeat(pixel_mask, P, axis=3)
             pixel_mask = pixel_mask.astype(jnp.float32)
             vis_mask = 1.0 - pixel_mask
             target = target.reshape(target.shape[0], target.shape[1], hn*wn, -1)
-        target = unpatchify(target, patch_size, H, W)
+            target = unpatchify(target, patch_size, H, W)
 
         # Masked MSE
         sq_err = jnp.square(target - outputs["recon"]) * vis_mask
