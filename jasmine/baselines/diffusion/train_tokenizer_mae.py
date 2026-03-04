@@ -781,10 +781,10 @@ def main(args: Args) -> None:
                         recon_seq = recon[0].clip(0, 1)
                     else:
                         T, H, W, C = gt_seq.shape
-                        gt_seq = optimizer.model.target(gt_seq)
+                        gt_seq = optimizer.model.target(gt_seq.reshape(1, *gt_seq.shape))
                         hn = H // args.patch_size
                         wn = W // args.patch_size
-
+                        gt_seq = gt_seq[0]
                         gt_seq = gt_seq.reshape(T, hn, wn, -1)
                         recon_seq = recon_seq.reshape(T, hn, wn, -1)
 
