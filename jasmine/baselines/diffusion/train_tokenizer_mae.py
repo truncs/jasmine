@@ -506,7 +506,8 @@ def main(args: Args) -> None:
 
         if model.is_latent_model:
             vis_mask = 1.0 - pixel_mask
-            target = target.reshape(target.shape[0], target.shape[1], hn, wn, -1)
+            target = target.reshape(target.shape[0], target.shape[1], hn*wn, -1)
+            vis_mask = vis_mask.reshape(vis_mask.shape[0], vis_mask.shape[1], hn*wn, -1)
         else:
             pixel_mask = jnp.repeat(pixel_mask, P, axis=2)
             pixel_mask = jnp.repeat(pixel_mask, P, axis=3)
