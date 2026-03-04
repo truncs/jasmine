@@ -378,7 +378,7 @@ class DinoViT(nnx.Module):
         x = jnp.concatenate((cls_token, x), axis=1)
 
         if self.num_storage_tokens > 0:
-            storage_token = jnp.broadcast_to(self.storage_tokens.value, (x.shape[0], *self.storage_token.value.shape[1:]))
+            storage_token = jnp.broadcast_to(self.storage_tokens.value, (x.shape[0], *self.storage_tokens.value.shape[1:]))
             x = jnp.concatenate((x[:, :1], storage_token, x[:, 1:]), axis=1)
 
         w0 = W // self.patch_size
