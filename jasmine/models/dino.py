@@ -274,7 +274,7 @@ class DinoViT(nnx.Module):
         embed_dim: int = 384,
         num_pos_tokens: int = 1369,
         num_cls_tokens: int = 1,
-        num_register_tokens: int = 4,
+        num_storage_tokens: int = 4,
         storage_tokens: bool = True,
         depth: int = 12,
         num_heads: int = 6,
@@ -293,7 +293,7 @@ class DinoViT(nnx.Module):
         self.embed_dim = embed_dim
         self.num_pos_tokens = num_pos_tokens
         self.num_cls_tokens = num_cls_tokens
-        self.num_register_tokens = num_register_tokens
+        self.num_storage_tokens = num_storage_tokens
         self.storage_tokens = storage_tokens
         self.depth = depth
         self.num_heads = num_heads
@@ -310,7 +310,7 @@ class DinoViT(nnx.Module):
         self.cls_token = nnx.Param(jnp.zeros((1, 1, embed_dim)))
 
         if storage_tokens:
-            self.storage_token = nnx.Param(jnp.zeros((1, num_register_tokens, embed_dim)))
+            self.storage_token = nnx.Param(jnp.zeros((1, num_storage_tokens, embed_dim)))
 
         blocks = []
         for i in range(depth):
