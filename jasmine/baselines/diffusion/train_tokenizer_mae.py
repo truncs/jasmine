@@ -199,10 +199,11 @@ class Dreamer4TokenizerMAE(nnx.Module):
 
     def target(self, videos: jnp.ndarray) -> jnp.ndarray:
         B, T, H, W, C = videos.shape
+        hp, wp = H // self.patch_size, W // self.patch_size
         if self.is_latent_model:
             videos = videos.reshape(B*T, H, W, C)
             patches = jax.lax.stop_gradient(self.latent_model(videos, training=False))['x_norm_patchtokens']
-            patches = patches.reshape(B, T, *patches.shape[1:])
+            patches = patches.reshape(B, T, hp, wp, -1)
         else:
             patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
 
