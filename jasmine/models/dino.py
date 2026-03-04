@@ -310,7 +310,7 @@ class DinoViT(nnx.Module):
         self.cls_token = nnx.Param(jnp.zeros((1, 1, embed_dim)))
 
         if storage_tokens:
-            self.storage_token = nnx.Param(jnp.zeros((1, num_storage_tokens, embed_dim)))
+            self.storage_tokens = nnx.Param(jnp.zeros((1, num_storage_tokens, embed_dim)))
 
         blocks = []
         for i in range(depth):
