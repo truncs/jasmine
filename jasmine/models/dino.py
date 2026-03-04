@@ -243,7 +243,7 @@ class Block(nnx.Module):
     def __call__(self, x: jnp.ndarray, rope: jnp.ndarray = None,
                  training: bool = False) -> jnp.ndarray:
 
-        def attn_residual_func(x: jnp.ndarray) -> jnp.ndarray:
+        def attn_residual_func(x: jnp.ndarray, rope: jnp.ndarray) -> jnp.ndarray:
             x = self.norm1(x)
             x = self.attn(x, rope=rope, training=training)
             x = self.ls1(x)
