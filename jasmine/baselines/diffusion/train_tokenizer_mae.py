@@ -39,29 +39,6 @@ from jasmine.utils.train_utils import (
 )
 
 
-def get_pca_features(features):
-    pca = sklearn.decomposition.PCA(n_components=3)
-    pca.fit(features)
-
-    pca_features = pca.transform(features)
-    pca_features = (pca_features - pca_features.min()) / (
-        pca_features.max() - pca_features.min())
-    pca_features = pca_features * 255
-    return pca_features
-
-
-def compare_seq(gt, recon, is_latent_model):
-    if is_latent_model:
-        gt = get_pca_features(gt)
-        recon = get_pca_features(recon)
-
-    comparison_seq = jnp.concatenate((gt, recon), axis=1)
-
-    if not is_latent_model:
-        comparison_seq = comparison_seq * 255.0
-    return einops.rearrange(comparison_seq, "t h w c -> h (t w) c")
-
-
 @dataclass
 class Args:
     # Experiment
@@ -123,6 +100,26 @@ class Args:
     num_workers: int = 8
     prefetch_buffer_size: int = 1
 
+
+def get_pca_features(features):
+    pca = sklearn.decomposition.PCA(n_components=3)
+    pca.fit(features)
+
+    pca_features = pca.transform(features)
+    pca_features = (pca_features - pca_features.min()) / (
+        pca_features.max() - pca_features.min())
+    pca_features = pca_features
+    return pca_features
+
+
+def compare_seq(gt, recon, is_latent_model):
+    if is_latent_model:
+        gt = jax.vmap(get_pca_features)(gt)
+        recon = jax.vmap(get_pca_features)(recon)
+
+    comparison_seq = jnp.concatenate((gt, recon), axis=1)
+    comparison_seq = comparison_seq * 255.0
+    return einops.rearrange(comparison_seq, "t h w c -> h (t w) c")
 
 
 class MovingRMS(nnx.Module):
