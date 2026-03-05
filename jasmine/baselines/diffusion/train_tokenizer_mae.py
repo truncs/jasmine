@@ -820,8 +820,8 @@ def main(args: Args) -> None:
                     if jax.process_index() == 0:
 
                         log_images = dict(
-                            image=wandb.Image(np.asarray(gt)),
-                            recon=wandb.Image(np.asarray(viz_recon)),
+                            image=wandb.Image(np.asarray(gt[0])),
+                            recon=wandb.Image(np.asarray(viz_recon[0])),
                             true_vs_recon=wandb.Image(
                                 np.asarray(comparison_seq.astype(np.uint8))
                             ),
