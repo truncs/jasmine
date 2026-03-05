@@ -385,10 +385,19 @@ def build_checkpoint_manager(args: Args) -> Optional[ocp.CheckpointManager]:
             grain.checkpoint.CheckpointRestore,
             cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
         )
+
+        def best_fn(m):
+            if args.is_latent_model:
+                return None
+            elif 'val_psnr' in m:
+                return m['val_psnr']
+            else:
+                return m['psnr']
+
         checkpoint_options = ocp.CheckpointManagerOptions(
             save_interval_steps=args.log_checkpoint_interval,
             max_to_keep=3,
-            best_fn=lambda m: m["val_psnr"] if "val_psnr" in m else m["psnr"],
+            best_fn=best_fn,
             best_mode="max",
             keep_period=args.log_checkpoint_keep_period,
             step_format_fixed_length=6,
