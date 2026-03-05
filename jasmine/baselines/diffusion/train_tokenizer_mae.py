@@ -794,7 +794,7 @@ def main(args: Args) -> None:
                         gt = gt.reshape(T, hn, wn, -1)
                         viz_recon = recon[0].reshape(T, hn, wn, -1)
 
-                    comparison_seq, gt, viz_recon = compare_seq(gt_seq, viz_recon, args.is_latent_model)
+                    comparison_seq, gt, viz_recon = compare_seq(gt, viz_recon, args.is_latent_model)
                     
                     if val_results and step % args.val_interval == 0:
                         val_results["gt_seq_val"] = (
