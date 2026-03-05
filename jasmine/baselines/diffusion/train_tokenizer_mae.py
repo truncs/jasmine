@@ -127,7 +127,7 @@ def compare_seq(gt, recon, is_latent_model):
 
     comparison_seq = jnp.concatenate((gt, recon), axis=1)
     comparison_seq = comparison_seq * 255.0
-    return einops.rearrange(comparison_seq, "t h w c -> h (t w) c")
+    return einops.rearrange(comparison_seq, "t h w c -> h (t w) c"), gt, recon
 
 
 class MovingRMS(nnx.Module):
@@ -783,17 +783,17 @@ def main(args: Args) -> None:
                 if step % args.log_image_interval == 0:
                     gt_seq = batch["videos"][0].astype(jnp.float32) / 255.0
                     if not args.is_latent_model:
-                        recon_seq = recon[0].clip(0, 1)
+                        viz_recon = recon[0].clip(0, 1)
                     else:
                         T, H, W, C = gt_seq.shape
                         gt_seq = optimizer.model.target(gt_seq.reshape(1, *gt_seq.shape))
                         hn = H // args.patch_size
                         wn = W // args.patch_size
-                        gt_seq = gt_seq[0]
-                        gt_seq = gt_seq.reshape(T, hn, wn, -1)
-                        recon_seq = recon[0].reshape(T, hn, wn, -1)
+                        gt = gt_seq[0]
+                        gt = gt.reshape(T, hn, wn, -1)
+                        viz_recon = recon[0].reshape(T, hn, wn, -1)
 
-                    comparison_seq = compare_seq(gt_seq, recon_seq, args.is_latent_model)
+                    comparison_seq, gt, viz_recon = compare_seq(gt_seq, viz_recon, args.is_latent_model)
                     
                     if val_results and step % args.val_interval == 0:
                         val_results["gt_seq_val"] = (
@@ -815,9 +815,10 @@ def main(args: Args) -> None:
                     # after indexing operation since it must not contain code
                     # sections that lead to cross-accelerator communication.
                     if jax.process_index() == 0:
+
                         log_images = dict(
-                            image=wandb.Image(np.asarray(gt_seq[0])),
-                            recon=wandb.Image(np.asarray(recon_seq[0])),
+                            image=wandb.Image(np.asarray(gt)),
+                            recon=wandb.Image(np.asarray(viz_recon)),
                             true_vs_recon=wandb.Image(
                                 np.asarray(comparison_seq.astype(np.uint8))
                             ),
