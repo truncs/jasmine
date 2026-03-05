@@ -103,12 +103,20 @@ class Args:
 
 def get_pca_features(features):
     pca = sklearn.decomposition.PCA(n_components=3)
+    reshape = False
+    if len(features.shape) > 2:
+        H, W, C = features.shape
+        features = features.reshape(H*W, -1)
+        reshape = True
     pca.fit(features)
 
-    pca_features = pca.transform(features)
+    pca_features = sklearn.decomposition.pca.transform(features)
     pca_features = (pca_features - pca_features.min()) / (
         pca_features.max() - pca_features.min())
     pca_features = pca_features
+
+    if reshape:
+        pca_features = pca_features.reshape(H, W, -1)
     return pca_features
 
 
