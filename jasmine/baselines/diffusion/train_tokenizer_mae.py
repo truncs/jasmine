@@ -114,8 +114,8 @@ def get_pca_features(features):
 
 def compare_seq(gt, recon, is_latent_model):
     if is_latent_model:
-        gt = jax.vmap(get_pca_features)(gt)
-        recon = jax.vmap(get_pca_features)(recon)
+        gt = np.array([get_pca_features(gt[i]) for i in range(gt.shape[0])])
+        recon = np.array([get_pca_features(recon[i]) for i in range(recon.shape[0])])
 
     comparison_seq = jnp.concatenate((gt, recon), axis=1)
     comparison_seq = comparison_seq * 255.0
