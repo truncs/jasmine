@@ -105,6 +105,7 @@ def get_pca_features(features):
     pca = sklearn.decomposition.PCA(n_components=3)
     reshape = False
     if len(features.shape) > 2:
+        print(features.shape)
         H, W, C = features.shape
         features = features.reshape(H*W, -1)
         reshape = True
