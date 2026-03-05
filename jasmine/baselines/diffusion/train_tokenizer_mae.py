@@ -387,9 +387,7 @@ def build_checkpoint_manager(args: Args) -> Optional[ocp.CheckpointManager]:
         )
 
         def best_fn(m):
-            if args.is_latent_model:
-                return None
-            elif 'val_psnr' in m:
+            if 'val_psnr' in m:
                 return m['val_psnr']
             else:
                 return m['psnr']
@@ -397,7 +395,7 @@ def build_checkpoint_manager(args: Args) -> Optional[ocp.CheckpointManager]:
         checkpoint_options = ocp.CheckpointManagerOptions(
             save_interval_steps=args.log_checkpoint_interval,
             max_to_keep=3,
-            best_fn=best_fn,
+            best_fn=None if args.is_latent_model else best_fn,
             best_mode="max",
             keep_period=args.log_checkpoint_keep_period,
             step_format_fixed_length=6,
