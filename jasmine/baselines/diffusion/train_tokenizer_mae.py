@@ -105,7 +105,6 @@ def get_pca_features(features):
     pca = sklearn.decomposition.PCA(n_components=3)
     reshape = False
     if len(features.shape) > 2:
-        print(features.shape)
         H, W, C = features.shape
         features = features.reshape(H*W, -1)
         reshape = True
@@ -126,8 +125,6 @@ def compare_seq(gt, recon, is_latent_model):
         gt = np.array([get_pca_features(gt[i]) for i in range(gt.shape[0])])
         recon = np.array([get_pca_features(recon[i]) for i in range(recon.shape[0])])
 
-    print(gt.shape)
-    print(recon.shape)
     comparison_seq = jnp.concatenate((gt, recon), axis=1)
     comparison_seq = comparison_seq * 255.0
     return einops.rearrange(comparison_seq, "t h w c -> h (t w) c"), gt, recon
