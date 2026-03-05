@@ -110,7 +110,7 @@ def get_pca_features(features):
         reshape = True
     pca.fit(features)
 
-    pca_features = sklearn.decomposition.pca.transform(features)
+    pca_features = pca.transform(features)
     pca_features = (pca_features - pca_features.min()) / (
         pca_features.max() - pca_features.min())
     pca_features = pca_features
