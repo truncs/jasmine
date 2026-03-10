@@ -376,7 +376,7 @@ def restore_checkpoint_if_needed(
 
         def _get_restore_args(x):
             if isinstance(x, (jax.Array, jax.ShapeDtypeStruct)):
-                return ocp.args.StandardRestoreArgs(sharding=replicated_sharding)
+                return ocp.args.StandardRestoreArgs(sharding=replicated_sharding, dtype=x.dtype)
             return ocp.args.StandardRestoreArgs()
 
         model_restore_args = jax.tree.map(_get_restore_args, abstract_optimizer_state)
@@ -387,19 +387,21 @@ def restore_checkpoint_if_needed(
             ),
         }
 
+        restored = None
         try:
             restore_args_dict["train_dataloader_state"] = grain.checkpoint.CheckpointRestore(train_iterator)
             if restore_step:
                 restore_args = ocp.args.Composite(**restore_args_dict)
                 restored = checkpoint_manager.restore(restore_step, args=restore_args)
-        except (ValueError, FileNotFoundError) as e:
+        except Exception as e:
             print(f"Warning: Could not restore dataloader state (likely process count mismatch): {e}")
-            del restore_args_dict["train_dataloader_state"]
+            if "train_dataloader_state" in restore_args_dict:
+                del restore_args_dict["train_dataloader_state"]
             if restore_step:
                 restore_args = ocp.args.Composite(**restore_args_dict)
                 restored = checkpoint_manager.restore(restore_step, args=restore_args)
 
-        if restore_step and "restored" in locals():
+        if restore_step and restored is not None:
             restored_optimizer_state = restored["model_state"]
             nnx.update(optimizer, restored_optimizer_state)
             if "train_dataloader_state" in restored:
