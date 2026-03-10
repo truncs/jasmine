@@ -202,19 +202,15 @@ def build_mesh_and_sharding(
 def shard_optimizer_states(
     optimizer: nnx.ModelAndOptimizer, replicated_sharding: NamedSharding
 ) -> None:
-    """Shard the optimizer and model states eagerly."""
-
-    def _shard_array(x):
-        if isinstance(x, jax.Array):
-            return jax.device_put(x, replicated_sharding)
-        return x
-
     model_state = nnx.state(optimizer.model)
-    model_sharded_state = jax.tree.map(_shard_array, model_state)
+    model_sharded_state = jax.lax.with_sharding_constraint(
+        model_state, replicated_sharding
+    )
     nnx.update(optimizer.model, model_sharded_state)
-
     optimizer_state = nnx.state(optimizer, nnx.optimizer.OptState)
-    optimizer_sharded_state = jax.tree.map(_shard_array, optimizer_state)
+    optimizer_sharded_state = jax.lax.with_sharding_constraint(
+        optimizer_state, replicated_sharding
+    )
     nnx.update(optimizer, optimizer_sharded_state)
 
 
