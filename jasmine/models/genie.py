@@ -595,21 +595,46 @@ class GenieDiffusion(nnx.Module):
         num_patches = (image_height // patch_size) * (image_width // patch_size)
         d_patch = image_channels * patch_size ** 2
 
-        tokenizer_args = Args()
-        tokenizer_args.image_height = image_height
-        tokenizer_args.image_width = image_width
-        tokenizer_args.max_mask_ratio = 0.0
+        enc_kwargs = {
+            "d_model": 512,
+            "n_latents": num_patch_latents,
+            "n_patches": num_patches,
+            "n_heads": 8,
+            "depth": tokenizer_enc_depth,
+            "dropout": 0.05,
+            "d_bottleneck": latent_patch_dim,
+            "mae_p_min": 0.0,
+            "mae_p_max": 0.9,
+            "time_every": 4,
+            "d_patch": d_patch,
+            "use_flash_attention": use_flash_attention,
+            "dtype": dtype,
+        }
 
-        tokenizer_args.num_latents = num_patch_latents
-        tokenizer_args.latent_dim = latent_patch_dim
-        tokenizer_args.patch_size = patch_size
-        tokenizer_args.enc_depth = tokenizer_enc_depth
-        tokenizer_args.dec_depth = tokenizer_dec_depth
-        tokenizer_args.use_flash_attention = use_flash_attention
-        tokenizer_args.dtype = dtype
+        dec_kwargs = {
+            "d_model": 512,
+            "n_heads": 8,
+            "n_patches": num_patches,
+            "n_latents": num_patch_latents,
+            "depth": tokenizer_dec_depth,
+            "d_patch": d_patch,
+            "dropout": 0.05,
+            "time_every": 4,
+            "d_bottleneck": latent_patch_dim,
+            "use_flash_attention": use_flash_attention,
+            "dtype": dtype,
+        }
 
-        key = rngs.params()
-        self.tokenizer = build_model(tokenizer_args, key)
+        self.tokenizer = Dreamer4TokenizerMAE(
+            image_height=image_height,
+            image_width=image_width,
+            patch_size=patch_size,
+            in_dim=image_channels,
+            encoder_kwargs=enc_kwargs,
+            decoder_kwargs=dec_kwargs,
+            dtype=dtype,
+            rngs=rngs,
+        )
 
         self.action_embed = ActionEncoder(
             d_model=latent_action_dim,
