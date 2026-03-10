@@ -58,6 +58,7 @@ class GenieMaskGIT(nnx.Module):
         self.patch_size = patch_size
         self.tokenizer_num_blocks = tokenizer_num_blocks
         self.tokenizer_num_heads = tokenizer_num_heads
+
         # --- LAM ---
         self.lam_dim = lam_dim
         self.lam_ffn_dim = lam_ffn_dim
@@ -541,6 +542,8 @@ class GenieDiffusion(nnx.Module):
         patch_size: int,
         tokenizer_num_blocks: int,
         tokenizer_num_heads: int,
+        tokenizer_enc_depth: int,
+        tokenizer_dec_depth: int,
         latent_action_dim: int,
         num_actions: int,
         is_action_discrete: bool,
@@ -590,15 +593,14 @@ class GenieDiffusion(nnx.Module):
         self.dtype = dtype
 
         num_patches = (image_height // patch_size) * (image_width // patch_size)
-
-        d_patch = in_dim * patch_size ** 2
+        d_patch = image_channels * patch_size ** 2
 
         enc_kwargs = {
             "d_model": 512,
             "n_latents": num_patch_latents,
             "n_patches": num_patches,
             "n_heads": 8,
-            "depth": 8,
+            "depth": tokenizer_enc_depth,
             "dropout": 0.05,
             "d_bottleneck": latent_patch_dim,
             "mae_p_min": 0.0,
@@ -614,7 +616,7 @@ class GenieDiffusion(nnx.Module):
             "n_heads": 8,
             "n_patches": num_patches,
             "n_latents": num_patch_latents,
-            "depth": 12,
+            "depth": tokenizer_dec_depth,
             "d_patch": d_patch,
             "dropout": 0.05,
             "time_every": 4,
@@ -627,12 +629,13 @@ class GenieDiffusion(nnx.Module):
             image_height=image_height,
             image_width=image_width,
             patch_size=patch_size,
-            in_dim=in_dim,
+            in_dim=image_channels,
             encoder_kwargs=enc_kwargs,
             decoder_kwargs=dec_kwargs,
             dtype=dtype,
             rngs=rngs,
         )
+
         self.action_embed = ActionEncoder(
             d_model=latent_action_dim,
             n_keyboard=num_actions,

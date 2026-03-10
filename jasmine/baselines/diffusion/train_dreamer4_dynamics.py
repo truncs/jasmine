@@ -64,6 +64,8 @@ class Args:
     patch_size: int = 16
     tokenizer_num_blocks: int = 4
     tokenizer_num_heads: int = 8
+    tokenizer_enc_depth: int = 8
+    tokenzier_dec_depth: int = 12
     tokenizer_checkpoint: str = ""
     # Action
     is_action_discrete: bool = False
@@ -127,6 +129,8 @@ def build_model(args: Args, rng: jax.Array) -> tuple[GenieDiffusion, jax.Array]:
         patch_size=args.patch_size,
         tokenizer_num_blocks=args.tokenizer_num_blocks,
         tokenizer_num_heads=args.tokenizer_num_heads,
+        tokenizer_enc_depth=args.tokenizer_enc_depth,
+        tokenizer_dec_depth=args.tokenizer_dec_depth,
         # Action
         is_action_discrete=args.is_action_discrete,
         latent_action_dim=args.latent_action_dim,
