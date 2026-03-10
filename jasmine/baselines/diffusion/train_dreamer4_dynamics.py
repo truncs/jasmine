@@ -65,7 +65,7 @@ class Args:
     tokenizer_num_blocks: int = 4
     tokenizer_num_heads: int = 8
     tokenizer_enc_depth: int = 8
-    tokenzier_dec_depth: int = 12
+    tokenizer_dec_depth: int = 12
     tokenizer_checkpoint: str = ""
     # Action
     is_action_discrete: bool = False
