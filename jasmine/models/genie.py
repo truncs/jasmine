@@ -607,8 +607,9 @@ class GenieDiffusion(nnx.Module):
         tokenizer_args.dec_depth = tokenizer_dec_depth
         tokenizer_args.use_flash_attention = use_flash_attention
         tokenizer_args.dtype = dtype
-        
-        self.tokenizer = build_model(tokenizer_args, rngs)
+
+        key = rngs.params()
+        self.tokenizer = build_model(tokenizer_args, key)
 
         self.action_embed = ActionEncoder(
             d_model=latent_action_dim,
