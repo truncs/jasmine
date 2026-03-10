@@ -918,11 +918,21 @@ def restore_genie_components(
     abstract_sharded_tokenizer_optimizer_state = _create_abstract_sharded_pytree(
         dummy_tokenizer_optimizer_state, sharding
     )
+    
+    def _get_restore_args(x):
+        try:
+            return ocp.args.StandardRestoreArgs(sharding=sharding, dtype=x.dtype)
+        except AttributeError:
+            return ocp.args.StandardRestoreArgs()
+
+    model_restore_args = jax.tree.map(_get_restore_args, abstract_sharded_tokenizer_optimizer_state)
+
     restored_tokenizer = tokenizer_checkpoint_manager.restore(
         step=tokenizer_checkpoint_manager.latest_step(),
         args=ocp.args.Composite(
             model_state=ocp.args.PyTreeRestore(  # type: ignore
-                abstract_sharded_tokenizer_optimizer_state  # type: ignore
+                abstract_sharded_tokenizer_optimizer_state,  # type: ignore
+                restore_args=model_restore_args
             ),
         ),
     )["model_state"]
