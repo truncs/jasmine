@@ -374,17 +374,21 @@ def restore_checkpoint_if_needed(
         mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
         replicated_sharding = NamedSharding(mesh, PartitionSpec())
 
-        def _get_restore_args(x):
-            if isinstance(x, (jax.Array, jax.ShapeDtypeStruct)):
-                return ocp.args.StandardRestoreArgs(sharding=replicated_sharding, dtype=x.dtype)
-            return ocp.args.StandardRestoreArgs()
+        def _create_abstract_sharded_pytree(pytree_template, sharding_spec):
+            def map_fn(leaf_template):
+                if hasattr(leaf_template, "shape") and hasattr(leaf_template, "dtype"):
+                    return jax.ShapeDtypeStruct(
+                        leaf_template.shape, leaf_template.dtype, sharding=sharding_spec
+                    )
+                return leaf_template
+            return jax.tree_util.tree_map(map_fn, pytree_template)
 
-        model_restore_args = jax.tree.map(_get_restore_args, abstract_optimizer_state)
+        abstract_sharded_optimizer_state = _create_abstract_sharded_pytree(
+            abstract_optimizer_state, replicated_sharding
+        )
 
         restore_args_dict = {
-            "model_state": ocp.args.PyTreeRestore(
-                abstract_optimizer_state, restore_args=model_restore_args
-            ),
+            "model_state": ocp.args.PyTreeRestore(abstract_sharded_optimizer_state),
         }
 
         restored = None
