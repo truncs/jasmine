@@ -366,18 +366,46 @@ def restore_checkpoint_if_needed(
         assert checkpoint_manager is not None
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
-        restore_args = ocp.args.Composite(
-            model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
-            train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
-            )
-        if restore_step:
-            restored = checkpoint_manager.restore(
-                restore_step, args=restore_args)
+
+        # Get replicated sharding (re-calculating since it's not passed but usually known)
+        # Note: In a real refactor we should probably pass replicated_sharding to this function
+        num_devices = jax.device_count()
+        device_mesh_arr = create_device_mesh((num_devices,))
+        mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
+        replicated_sharding = NamedSharding(mesh, PartitionSpec())
+
+        def _get_restore_args(x):
+            if isinstance(x, (jax.Array, jax.ShapeDtypeStruct)):
+                return ocp.args.StandardRestoreArgs(sharding=replicated_sharding)
+            return ocp.args.StandardRestoreArgs()
+
+        model_restore_args = jax.tree.map(_get_restore_args, abstract_optimizer_state)
+
+        restore_args_dict = {
+            "model_state": ocp.args.PyTreeRestore(
+                abstract_optimizer_state, restore_args=model_restore_args
+            ),
+        }
+
+        try:
+            restore_args_dict["train_dataloader_state"] = grain.checkpoint.CheckpointRestore(train_iterator)
+            if restore_step:
+                restore_args = ocp.args.Composite(**restore_args_dict)
+                restored = checkpoint_manager.restore(restore_step, args=restore_args)
+        except (ValueError, FileNotFoundError) as e:
+            print(f"Warning: Could not restore dataloader state (likely process count mismatch): {e}")
+            del restore_args_dict["train_dataloader_state"]
+            if restore_step:
+                restore_args = ocp.args.Composite(**restore_args_dict)
+                restored = checkpoint_manager.restore(restore_step, args=restore_args)
+
+        if restore_step and "restored" in locals():
             restored_optimizer_state = restored["model_state"]
             nnx.update(optimizer, restored_optimizer_state)
-            train_iterator = restored["train_dataloader_state"]
+            if "train_dataloader_state" in restored:
+                train_iterator = restored["train_dataloader_state"]
         step = restore_step or 0
-        print(f"Restored dataloader and model state from step {step}")
+        print(f"Restored model state (and optionally dataloader) from step {step}")
     return step, optimizer, train_iterator, val_iterator
 
 
