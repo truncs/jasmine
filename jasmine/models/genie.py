@@ -941,10 +941,13 @@ def _create_abstract_sharded_pytree(
     """Replaces arrays in a pytree with ShapeDtypeStructs having the given sharding."""
 
     def map_fn(leaf_template):
-        if hasattr(leaf_template, "shape") and hasattr(leaf_template, "dtype"):
-            return jax.ShapeDtypeStruct(
-                leaf_template.shape, leaf_template.dtype, sharding=sharding_spec
+        val = getattr(leaf_template, "value", leaf_template)
+        if hasattr(val, "shape") and hasattr(val, "dtype"):
+            return type(leaf_template)(
+                jax.ShapeDtypeStruct(val.shape, val.dtype, sharding=sharding_spec)
+            ) if hasattr(leaf_template, "value") else jax.ShapeDtypeStruct(
+                val.shape, val.dtype, sharding=sharding_spec
             )
         return leaf_template
 
-    return jax.tree_util.tree_map(map_fn, pytree_template)
+    return jax.tree_util.tree_map(map_fn, pytree_template, is_leaf=lambda x: hasattr(x, "value"))
