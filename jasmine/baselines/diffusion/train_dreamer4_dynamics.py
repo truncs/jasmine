@@ -1,4 +1,12 @@
 import os
+import multiprocessing
+
+if multiprocessing.current_process().name != "MainProcess":
+    # Grain uses multiprocessing to prefetch data. In child processes,
+    # we must disable the GPU to avoid deadlocks with JAX/CUDA.
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ["JAX_PLATFORMS"] = "cpu"
+    os.environ["JAX_PLATFORM_NAME"] = "cpu"
 
 import itertools
 from dataclasses import dataclass, field
@@ -42,8 +50,8 @@ class Args:
     image_height: int = 64
     image_width: int = 64
     data_dir: str = ""
-    save_ckpt: bool = False
-    restore_ckpt: bool = False
+    save_ckpt: bool = True
+    restore_ckpt: bool = True
     # Optimization
     batch_size: int = 36
     init_lr: float = 0.0
@@ -111,6 +119,10 @@ class Args:
     prefetch_buffer_size: int = 1
     val_num_workers: int = 4
     val_prefetch_buffer_size: int = 2
+    # Distributed
+    coordinator_address: Optional[str] = None
+    process_id: Optional[int] = None
+    num_processes: Optional[int] = None
 
 
 def build_model(args: Args, rng: jax.Array) -> tuple[GenieDiffusion, jax.Array]:
@@ -349,9 +361,9 @@ def _calculate_step_metrics(
 
 def main(args: Args) -> None:
     jax.distributed.initialize(
-        coordinator_address="localhost:1234",
-        num_processes=1,
-        process_id=0
+        coordinator_address=args.coordinator_address,
+        num_processes=args.num_processes,
+        process_id=args.process_id,
     )
 
     num_devices = jax.device_count()
@@ -680,13 +692,19 @@ def main(args: Args) -> None:
             for elem in val_iterator
         )
     if jax.process_index() == 0:
-        first_batch = next(dataloader_train)
-        first_batch["rng"] = rng  # type: ignore
+        print("Compiling train_step...")
+    # NOTE: All processes must participate in shared array creation if used
+    # inside the compiled function or if sharding is required.
+    first_batch = next(dataloader_train)
+    first_batch["rng"] = rng  # type: ignore
+
+    if jax.process_index() == 0:
         compiled = train_step.lower(optimizer, first_batch, step, rng).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
-        # Do not skip the first batch during training
-        dataloader_train = itertools.chain([first_batch], dataloader_train)
+
+    # Do not skip the first batch during training
+    dataloader_train = itertools.chain([first_batch], dataloader_train)
     print(f"Starting training from step {step}...")
     first_step = step
     while step < args.num_steps:
