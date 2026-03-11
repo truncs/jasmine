@@ -915,16 +915,28 @@ def restore_genie_components(
 
     dummy_tokenizer_optimizer = nnx.ModelAndOptimizer(dummy_tokenizer, tx)
     dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
-    abstract_sharded_tokenizer_optimizer_state = _create_abstract_sharded_pytree(
-        dummy_tokenizer_optimizer_state, sharding
-    )
+    # Pre-shard the template
+    def _shard(x):
+        try:
+            return jax.device_put(x, sharding)
+        except Exception:
+            return x
+    dummy_tokenizer_optimizer_state = jax.tree.map(_shard, dummy_tokenizer_optimizer_state)
+    
+    def _get_restore_args(leaf):
+        return ocp.args.StandardRestore(
+            fallback_sharding=sharding
+        )
+    
+    restore_args_tree = jax.tree.map(_get_restore_args, dummy_tokenizer_optimizer_state)
 
     restored_tokenizer = tokenizer_checkpoint_manager.restore(
         step=tokenizer_checkpoint_manager.latest_step(),
         args=ocp.args.Composite(
-            model_state=ocp.args.PyTreeRestore(  # type: ignore
-                item=abstract_sharded_tokenizer_optimizer_state,  # type: ignore
-            ),
+            model_state=ocp.args.PyTreeRestore(
+                item=dummy_tokenizer_optimizer_state, 
+                restore_args=restore_args_tree
+            ),  # type: ignore
         ),
     )["model_state"]
     nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer.model)
@@ -936,16 +948,4 @@ def restore_genie_components(
     return optimizer
 
 
-def _create_abstract_sharded_pytree(
-    pytree_template: nnx.GraphState, sharding_spec: jax.sharding.NamedSharding
-) -> jax.Array:
-    """Replaces arrays in a pytree with ShapeDtypeStructs having the given sharding."""
 
-    def map_fn(leaf_template):
-        if hasattr(leaf_template, "shape") and hasattr(leaf_template, "dtype"):
-            return jax.ShapeDtypeStruct(
-                leaf_template.shape, leaf_template.dtype, sharding=sharding_spec
-            )
-        return leaf_template
-
-    return jax.tree_util.tree_map(map_fn, pytree_template)
