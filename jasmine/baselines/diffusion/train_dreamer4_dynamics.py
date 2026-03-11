@@ -208,10 +208,15 @@ def shard_optimizer_states(
     )
     nnx.update(optimizer.model, model_sharded_state)
     optimizer_state = nnx.state(optimizer, nnx.optimizer.OptState)
-    optimizer_sharded_state = jax.lax.with_sharding_constraint(
-        optimizer_state, replicated_sharding
-    )
-    nnx.update(optimizer, optimizer_sharded_state)
+    sharded_opt_state = jax.tree_util.tree_map(
+        lambda x: jax.device_put(x, replicated_sharding) 
+        if isinstance(x, (jax.Array, jnp.ndarray)) else x, 
+        optimizer_state
+    )    
+    # optimizer_sharded_state = jax.lax.with_sharding_constraint(
+    # optimizer_state, replicated_sharding
+    # )
+    nnx.update(optimizer, sharded_opt_state)
 
 
 def build_dataloader(args: Args, data_dir: str, num_workers: int, prefetch_buffer_size: int, num_epochs: Optional[int] = None) -> grain.DataLoaderIterator:
