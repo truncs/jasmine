@@ -919,17 +919,11 @@ def restore_genie_components(
         dummy_tokenizer_optimizer_state, sharding
     )
 
-    restore_args = jax.tree_util.tree_map(
-        lambda _: ocp.RestoreArgs(dtype=args.dtype),
-        abstract_sharded_tokenizer_optimizer_state
-    )
-
     restored_tokenizer = tokenizer_checkpoint_manager.restore(
         step=tokenizer_checkpoint_manager.latest_step(),
         args=ocp.args.Composite(
             model_state=ocp.args.PyTreeRestore(  # type: ignore
                 item=abstract_sharded_tokenizer_optimizer_state,  # type: ignore
-                restore_args=restore_args
             ),
         ),
     )["model_state"]
