@@ -915,14 +915,24 @@ def restore_genie_components(
 
     dummy_tokenizer_optimizer = nnx.ModelAndOptimizer(dummy_tokenizer, tx)
     dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
-    abstract_sharded_tokenizer_optimizer_state = _create_abstract_sharded_pytree(
-        dummy_tokenizer_optimizer_state, sharding
-    )
+    
+    import numpy as np
+    def _get_restore_args(x):
+        try:
+            val = getattr(x, "value", x)
+            dt = val.dtype
+        except AttributeError:
+            dt = np.asarray(getattr(x, "value", x)).dtype
+        return ocp.args.StandardRestoreArgs(sharding=sharding, dtype=dt)
+
+    model_restore_args = jax.tree_util.tree_map(_get_restore_args, dummy_tokenizer_optimizer_state)
+
     restored_tokenizer = tokenizer_checkpoint_manager.restore(
         step=tokenizer_checkpoint_manager.latest_step(),
         args=ocp.args.Composite(
             model_state=ocp.args.PyTreeRestore(  # type: ignore
-                abstract_sharded_tokenizer_optimizer_state  # type: ignore
+                dummy_tokenizer_optimizer_state,  # type: ignore
+                restore_args=model_restore_args
             ),
         ),
     )["model_state"]
@@ -933,18 +943,3 @@ def restore_genie_components(
     # Reinitialize the optimizer states
     optimizer = nnx.ModelAndOptimizer(model, tx)
     return optimizer
-
-
-def _create_abstract_sharded_pytree(
-    pytree_template: nnx.GraphState, sharding_spec: jax.sharding.NamedSharding
-) -> jax.Array:
-    """Replaces arrays in a pytree with ShapeDtypeStructs having the given sharding."""
-    
-    def map_fn(leaf_template):
-        if hasattr(leaf_template, "shape") and hasattr(leaf_template, "dtype"):
-            return jax.ShapeDtypeStruct(
-                leaf_template.shape, leaf_template.dtype, sharding=sharding_spec
-            )
-        return leaf_template
-
-    return jax.tree_util.tree_map(map_fn, pytree_template)
