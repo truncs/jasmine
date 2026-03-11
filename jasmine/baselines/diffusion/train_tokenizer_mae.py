@@ -101,6 +101,7 @@ class Args:
     wandb_id: str = ""
     num_workers: int = 8
     prefetch_buffer_size: int = 1
+    gradient_accumulation_steps: int = 1
 
 
 
@@ -254,6 +255,10 @@ def build_optimizer(model: Dreamer4TokenizerMAE, args: Args) -> nnx.ModelAndOpti
         weight_decay=1e-4,
         mu_dtype=args.param_dtype,  # moments in full precision
     )
+    if args.gradient_accumulation_steps > 1:
+        tx = optax.MultiSteps(
+            tx, every_k_schedule=args.gradient_accumulation_steps
+        )
     optimizer = nnx.ModelAndOptimizer(model, tx)
     return optimizer
 
