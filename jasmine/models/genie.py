@@ -922,7 +922,8 @@ def restore_genie_components(
         step=tokenizer_checkpoint_manager.latest_step(),
         args=ocp.args.Composite(
             model_state=ocp.args.PyTreeRestore(  # type: ignore
-                abstract_sharded_tokenizer_optimizer_state  # type: ignore
+                item=abstract_sharded_tokenizer_optimizer_state,  # type: ignore
+                dtype=args.dtype
             ),
         ),
     )["model_state"]
