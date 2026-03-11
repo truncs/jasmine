@@ -923,7 +923,7 @@ def restore_genie_components(
         args=ocp.args.Composite(
             model_state=ocp.args.PyTreeRestore(  # type: ignore
                 item=abstract_sharded_tokenizer_optimizer_state,  # type: ignore
-                dtype=args.dtype
+                restore_args=ocp.args.StandardRestoreArgs(dtype=args.dtype)
             ),
         ),
     )["model_state"]
