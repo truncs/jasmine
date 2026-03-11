@@ -208,15 +208,10 @@ def shard_optimizer_states(
     )
     nnx.update(optimizer.model, model_sharded_state)
     optimizer_state = nnx.state(optimizer, nnx.optimizer.OptState)
-    sharded_opt_state = jax.tree_util.tree_map(
-        lambda x: jax.device_put(x, replicated_sharding) 
-        if isinstance(x, (jax.Array, jnp.ndarray)) else x, 
-        optimizer_state
-    )    
-    # optimizer_sharded_state = jax.lax.with_sharding_constraint(
-    # optimizer_state, replicated_sharding
-    # )
-    nnx.update(optimizer, sharded_opt_state)
+    optimizer_sharded_state = jax.lax.with_sharding_constraint(
+        optimizer_state, replicated_sharding
+    )
+    nnx.update(optimizer, optimizer_sharded_state)
 
 
 def build_dataloader(args: Args, data_dir: str, num_workers: int, prefetch_buffer_size: int, num_epochs: Optional[int] = None) -> grain.DataLoaderIterator:
@@ -303,8 +298,21 @@ def restore_or_initialize_components(
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
 
+        def _create_abstract_sharded_pytree(pytree_template, sharding_spec):
+            def map_fn(leaf_template):
+                if hasattr(leaf_template, "shape") and hasattr(leaf_template, "dtype"):
+                    return jax.ShapeDtypeStruct(
+                        leaf_template.shape, leaf_template.dtype, sharding=sharding_spec
+                    )
+                return leaf_template
+            return jax.tree_util.tree_map(map_fn, pytree_template)
+
+        abstract_sharded_optimizer_state = _create_abstract_sharded_pytree(
+            abstract_optimizer_state, replicated_sharding
+        )
+
         restore_args = ocp.args.Composite(
-            model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
+            model_state=ocp.args.PyTreeRestore(abstract_sharded_optimizer_state, partial_restore=True),  # type: ignore
             train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
         )
         if restore_step:
