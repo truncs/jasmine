@@ -456,6 +456,8 @@ def main(args: Args) -> None:
             val_iterator,
         )
     )
+    # Eagerly shard newly initialized states from restore_genie_components
+    shard_optimizer_states(optimizer, replicated_sharding)
 
     # --- Define loss and train step (close over args) ---
     def dynamics_loss_fn(

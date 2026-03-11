@@ -467,6 +467,8 @@ def main(args: Args) -> None:
     step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
         args, checkpoint_manager, optimizer, train_iterator, replicated_sharding, val_iterator, args.restore_step
     )
+    # Eagerly shard newly initialized states from restore
+    shard_optimizer_states(optimizer, replicated_sharding)
 
     # LPIPS evaluator
     lpips_evaluator = lpips_jax.LPIPSEvaluator(replicate=False, net='alexnet') # ['alexnet', 'vgg16']
