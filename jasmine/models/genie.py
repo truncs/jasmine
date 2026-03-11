@@ -923,7 +923,7 @@ def restore_genie_components(
             dt = val.dtype
         except AttributeError:
             dt = np.asarray(getattr(x, "value", x)).dtype
-        return ocp.args.StandardRestoreArgs(sharding=sharding, dtype=dt)
+        return ocp.args.StandardRestore(sharding=sharding, dtype=dt)
 
     model_restore_args = jax.tree_util.tree_map(_get_restore_args, dummy_tokenizer_optimizer_state)
 

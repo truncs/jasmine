@@ -377,7 +377,7 @@ def restore_checkpoint_if_needed(
                 dt = val.dtype
             except AttributeError:
                 dt = np.asarray(getattr(x, "value", x)).dtype
-            return ocp.args.StandardRestoreArgs(sharding=replicated_sharding, dtype=dt)
+            return ocp.args.StandardRestore(sharding=replicated_sharding, dtype=dt)
 
         model_restore_args = jax.tree_util.tree_map(_get_restore_args, abstract_optimizer_state)
 
