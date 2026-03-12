@@ -12,7 +12,7 @@ from jasmine.models.lam import LatentActionModel
 from jasmine.models.tokenizer import TokenizerVQVAE, TokenizerMAE
 from jasmine.baselines.diffusion.train_tokenizer_mae import Dreamer4TokenizerMAE, build_model, Args
 from jasmine.models.dreamer4 import Dynamics, ActionEncoder
-
+from jasmine.utils.nn import MovingRMS
 
 class GenieMaskGIT(nnx.Module):
     """GenieMaskGIT model"""
