@@ -576,7 +576,9 @@ def main(args: Args) -> None:
 
         # Combine (row-weighted by nominal B parts; denominator B keeps scale
         # constant)
-        loss = ((loss_emp * (B - B_self)) + (loss_self * B_self)) / B
+        loss_emp_norm = model.loss_emp(loss_emp, training=training)
+        loss_self_norm = model.loss_self(loss_self, training=training)
+        loss = ((loss_emp_norm * (B - B_self)) + (loss_self_norm * B_self)) / B
 
         metrics = {
             "flow_mse": jnp.mean(flow_emp),

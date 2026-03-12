@@ -34,6 +34,7 @@ from jasmine.models.dreamer4 import Encoder, Decoder
 from jasmine.losses.frequency_loss import FocalFrequencyLoss
 from jasmine.utils.dataloader import get_dataloader
 from jasmine.utils.preprocess import patchify, unpatchify
+from jasmine.utils.nn import MovingRMS
 from jasmine.utils.train_utils import (
     get_lr_schedule,
     count_parameters_by_component,
@@ -102,23 +103,6 @@ class Args:
     num_workers: int = 8
     prefetch_buffer_size: int = 1
     gradient_accumulation_steps: int = 1
-
-
-
-class MovingRMS(nnx.Module):
-    def __init__(self, momentum: float = 0.99):
-        self.momentum = momentum
-        self.rms = nnx.Variable(jnp.ones((), dtype=jnp.float32))
-
-    def __call__(self, x: jax.Array, training: bool = True) -> jax.Array:
-        if training:
-            # Update running RMS estimate: RMS = sqrt(E[x^2])
-            # For scalar loss, mean(square(x)) is just x^2
-            ms = jnp.mean(jnp.square(x))
-            self.rms.value = self.momentum * self.rms.get_value() + (1 - self.momentum) * jnp.sqrt(ms + 1e-8)
-        
-        # Normalize by stop-gradiented RMS to avoid differentiating through the moving average
-        return x / jax.lax.stop_gradient(jnp.maximum(self.rms.get_value(), 1e-8))
 
 
 class Dreamer4TokenizerMAE(nnx.Module):

@@ -592,6 +592,9 @@ class GenieDiffusion(nnx.Module):
 
         self.dtype = dtype
 
+        self.loss_emp = MovingRMS()
+        self.loss_self = MovingRMS()
+
         num_patches = (image_height // patch_size) * (image_width // patch_size)
         d_patch = image_channels * patch_size ** 2
 
