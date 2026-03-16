@@ -474,6 +474,7 @@ def main(args: Args) -> None:
         inputs: dict,
         step: int,
         rngs: nnx.Rngs,
+        training: bool = True,
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
@@ -576,8 +577,8 @@ def main(args: Args) -> None:
 
         # Combine (row-weighted by nominal B parts; denominator B keeps scale
         # constant)
-        loss_emp_norm = model.loss_emp(loss_emp)
-        loss_self_norm = model.loss_self(loss_self)
+        loss_emp_norm = model.loss_emp(loss_emp, training=training)
+        loss_self_norm = model.loss_self(loss_self, training=training)
         loss = ((loss_emp_norm * (B - B_self)) + (loss_self_norm * B_self)) / B
 
         metrics = {
@@ -595,7 +596,7 @@ def main(args: Args) -> None:
 
         def loss_fn(model: GenieDiffusion, rngs: nnx.Rngs) -> tuple[jax.Array, dict]:
             model.train()
-            return dynamics_loss_fn(model, inputs, step, rngs)
+            return dynamics_loss_fn(model, inputs, step, rngs, training=True)
 
         (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
             optimizer.model, rngs
@@ -613,7 +614,7 @@ def main(args: Args) -> None:
         genie.eval()
         rngs = nnx.Rngs(rng)
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
-        loss, metrics = dynamics_loss_fn(genie, inputs, step, rngs=rngs)
+        loss, metrics = dynamics_loss_fn(genie, inputs, step, rngs=rngs, training=False)
         val_output = {"loss": loss, "metrics": metrics}
 
         # --- Evaluate full frame prediction (sampling) ---
