@@ -46,6 +46,7 @@ from jasmine.utils.train_utils import (
 
 @dataclass
 class Args:
+    video_key: str = 'videos'
     # Experiment
     num_steps: int = 300_000
     seed: int = 0
@@ -595,7 +596,7 @@ def main(args: Args) -> None:
     dataloader_train = (
         {
             "videos": jax.make_array_from_process_local_data(
-                videos_sharding, elem["videos"]
+                videos_sharding, elem[args.video_key]
             ),
         }
         for elem in train_iterator
@@ -605,7 +606,7 @@ def main(args: Args) -> None:
         dataloader_val = (
             {
                 "videos": jax.make_array_from_process_local_data(
-                    videos_sharding, elem["videos"]
+                    videos_sharding, elem[args.video_key]
                 ),
             }
             for elem in val_iterator

@@ -42,6 +42,9 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
 
 @dataclass
 class Args:
+    # General
+    video_key: str = 'videos'
+    action_key: str = 'action'
     # Experiment
     num_steps: int = 200_000
     seed: int = 0
@@ -696,11 +699,11 @@ def main(args: Args) -> None:
     dataloader_train = (
         {
             "videos": jax.make_array_from_process_local_data(
-                videos_sharding, local_data=elem["videos"]
+                videos_sharding, local_data=elem[args.video_key]
             ),
             "actions": (
                 jax.make_array_from_process_local_data(
-                    actions_sharding, elem["actions"]
+                    actions_sharding, elem[args.action_key]
                 )
             ),
         }
@@ -711,11 +714,11 @@ def main(args: Args) -> None:
         dataloader_val = (
             {
                 "videos": jax.make_array_from_process_local_data(
-                    videos_sharding, elem["videos"]
+                    videos_sharding, elem[args.video_key]
                 ),
                 "actions": (
                     jax.make_array_from_process_local_data(
-                        actions_sharding, elem["actions"]
+                        actions_sharding, elem[args.action_key]
                     )
                 ),
             }
