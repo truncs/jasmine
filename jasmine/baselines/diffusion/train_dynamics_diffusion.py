@@ -346,27 +346,7 @@ def _calculate_step_metrics(
     )
 
     loss = jnp.asarray(0.0)
-    if "x_pred" in outputs.keys():
-        # x-pred instead of v-pred as per Dreamer 4 section 3.2
-        mse_BTNL = (outputs["x_pred"] - outputs["x_gt"]) ** 2
-        mse_BT = jnp.mean(mse_BTNL, axis=(2, 3))
-        mse = jnp.mean(mse_BT)
-        metrics["mse"] = mse
-        if args.diffusion_use_ramp_weight:
-            # ramp weight as per Dreamer 4 section 3.2
-            ramp_weight = 0.9 * outputs["signal_level"] + 0.1
-            loss = jnp.mean(mse_BT * ramp_weight)
-        else:
-            loss = mse
 
-    if "lam_indices" in outputs.keys():
-        _, index_counts_lam = jnp.unique_counts(
-            jnp.ravel(outputs["lam_indices"]),
-            size=num_actions,
-            fill_value=0,
-        )
-        codebook_usage_lam = (index_counts_lam != 0).mean()
-        metrics["codebook_usage_lam"] = codebook_usage_lam
     return loss, metrics
 
 

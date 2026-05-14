@@ -1,4 +1,12 @@
 import os
+import multiprocessing
+
+if multiprocessing.current_process().name != "MainProcess":
+    # Grain uses multiprocessing to prefetch data. In child processes,
+    # we must disable the GPU to avoid deadlocks with JAX/CUDA.
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ["JAX_PLATFORMS"] = "cpu"
+    os.environ["JAX_PLATFORM_NAME"] = "cpu"
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.98")
 
@@ -162,19 +170,18 @@ def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
         for x in os.listdir(data_dir)
         if x.endswith(".array_record")
     ]
-    grain_dataloader = get_dataloader(
+    grain_iterator = get_dataloader(
         array_record_files,
         args.seq_len,
         # NOTE: We deliberately pass the global batch size
         # The dataloader shards the dataset across all processes
         args.batch_size,
         *image_shape,
+        num_processes=jax.process_count(),
         num_workers=8,
         prefetch_buffer_size=1,
         seed=args.seed,
     )
-    initial_state = grain_dataloader._create_initial_state()
-    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
     return grain_iterator
 
 
@@ -277,7 +284,11 @@ def enable_sowing(lam: LatentActionModel) -> None:
 
 
 def main(args: Args) -> None:
-    jax.distributed.initialize()
+    jax.distributed.initialize(
+        coordinator_address="localhost:1234",
+        num_processes=1,
+        process_id=0
+    )
     num_devices = jax.device_count()
     if num_devices == 0:
         raise ValueError("No JAX devices found.")
@@ -594,5 +605,12 @@ def main(args: Args) -> None:
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
+
+    import tyro
     args = tyro.cli(Args)
     main(args)

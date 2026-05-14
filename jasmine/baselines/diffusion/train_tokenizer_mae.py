@@ -1,5 +1,12 @@
 import os
-import time
+import multiprocessing
+
+if multiprocessing.current_process().name != "MainProcess":
+    # Grain uses multiprocessing to prefetch data. In child processes,
+    # we must disable the GPU to avoid deadlocks with JAX/CUDA.
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ["JAX_PLATFORMS"] = "cpu"
+    os.environ["JAX_PLATFORM_NAME"] = "cpu"
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.98")
 
@@ -24,8 +31,10 @@ import lpips_jax
 
 from jasmine.models.tokenizer import TokenizerMAE
 from jasmine.models.dreamer4 import Encoder, Decoder
+from jasmine.losses.frequency_loss import FocalFrequencyLoss
 from jasmine.utils.dataloader import get_dataloader
 from jasmine.utils.preprocess import patchify, unpatchify
+from jasmine.utils.nn import MovingRMS
 from jasmine.utils.train_utils import (
     get_lr_schedule,
     count_parameters_by_component,
@@ -65,13 +74,15 @@ class Args:
     latent_dim: int = 32
     num_latents: int = 128
     patch_size: int = 16
-    num_blocks: int = 4
+    enc_depth: int = 8
+    dec_depth: int = 12
     num_heads: int = 8
     dropout: float = 0.0
     max_mask_ratio: float = 0.9
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
     use_flash_attention: bool = True
+    frequency_loss_weight: float = 0.1
     # Logging
     log: bool = True
     entity: str = ""
@@ -91,23 +102,7 @@ class Args:
     wandb_id: str = ""
     num_workers: int = 8
     prefetch_buffer_size: int = 1
-
-
-
-class MovingRMS(nnx.Module):
-    def __init__(self, momentum: float = 0.99):
-        self.momentum = momentum
-        self.rms = nnx.Variable(jnp.ones((), dtype=jnp.float32))
-
-    def __call__(self, x: jax.Array, training: bool = True) -> jax.Array:
-        if training:
-            # Update running RMS estimate: RMS = sqrt(E[x^2])
-            # For scalar loss, mean(square(x)) is just x^2
-            ms = jnp.mean(jnp.square(x))
-            self.rms.value = self.momentum * self.rms.get_value() + (1 - self.momentum) * jnp.sqrt(ms + 1e-8)
-        
-        # Normalize by stop-gradiented RMS to avoid differentiating through the moving average
-        return x / jax.lax.stop_gradient(jnp.maximum(self.rms.get_value(), 1e-8))
+    gradient_accumulation_steps: int = 1
 
 
 class Dreamer4TokenizerMAE(nnx.Module):
@@ -133,30 +128,49 @@ class Dreamer4TokenizerMAE(nnx.Module):
         self.decoder = Decoder(**decoder_kwargs, rngs=rngs)
         self.mse_norm = MovingRMS()
         self.lpips_norm = MovingRMS()
+        self.freq_norm = MovingRMS()
 
-    def __call__(self, batch: dict, training: bool = True) -> dict:
-        rngs = batch.get("rng", None)
-        videos = batch["videos"]
-        B, T, H, W, C = videos.shape
-        
-        patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
-        B, T, Hp, Wp, D = patches.shape
-        patches_flat = patches.reshape(B, T, Hp*Wp, D)
-        
-        mae_rng = nnx.Rngs(mae=rngs) if rngs is not None else None
-        
-        z_latents, (mask, keep) = self.encoder(patches_flat, rngs=mae_rng)
-        
-        recon_patches_flat = self.decoder(z_latents)
-        
-        recon_videos = unpatchify(recon_patches_flat, self.patch_size, H, W)
-        
+    def __call__(self, batch: dict, training: bool = True, rngs=nnx.Rngs) -> dict:
+
+        outputs = self.mask_and_encode(batch, training, rngs=rngs)
+        z_latents = outputs['z']
+        mask = outputs['mask']
+        keep = outputs['keep']
+
+
+        recon_videos = self.decode(z_latents)
+
         outputs = {
             "recon": recon_videos,
             "z": z_latents,
             "mask": mask
         }
         return outputs
+
+    def mask_and_encode(self, batch: dict, training: bool = True, rngs: nnx.Rngs = None) -> dict:
+        rngs = batch.get("rng", None)
+        videos = batch["videos"]
+        B, T, H, W, C = videos.shape
+
+        patches = patchify(videos, self.patch_size) # (B, T, Hp, Wp, D)
+        B, T, Hp, Wp, D = patches.shape
+        patches_flat = patches.reshape(B, T, Hp*Wp, D)
+
+        mae_rng = nnx.Rngs(mae=rngs) if rngs is not None else None
+
+        z_latents, (mask, keep) = self.encoder(patches_flat, rngs=mae_rng)
+        return {
+            'z': z_latents,
+            'mask': mask,
+            'keep': keep
+        }
+
+    def decode(self, z: jnp.ndarray) -> jnp.ndarray:
+        recon_patches_flat = self.decoder(z)
+        recon_videos = unpatchify(
+            recon_patches_flat, self.patch_size, self.image_height, self.image_width)
+        return recon_videos
+
 
 def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.Array]:
     rng, _rng = jax.random.split(rng)
@@ -170,7 +184,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
         "n_latents": args.num_latents, 
         "n_patches": num_patches, 
         "n_heads": 8, 
-        "depth": 8, 
+        "depth": args.enc_depth, 
         "dropout": 0.05,
         "d_bottleneck": args.latent_dim,
         "mae_p_min": 0.0, 
@@ -186,7 +200,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Dreamer4TokenizerMAE, jax.A
         "n_heads": 8, 
         "n_patches": num_patches, 
         "n_latents": args.num_latents, 
-        "depth": 12,
+        "depth": args.dec_depth,
         "d_patch": d_patch, 
         "dropout": 0.05, 
         "time_every": 4,
@@ -225,6 +239,10 @@ def build_optimizer(model: Dreamer4TokenizerMAE, args: Args) -> nnx.ModelAndOpti
         weight_decay=1e-4,
         mu_dtype=args.param_dtype,  # moments in full precision
     )
+    if args.gradient_accumulation_steps > 1:
+        tx = optax.MultiSteps(
+            tx, every_k_schedule=args.gradient_accumulation_steps
+        )
     optimizer = nnx.ModelAndOptimizer(model, tx)
     return optimizer
 
@@ -242,15 +260,18 @@ def build_mesh_and_sharding(
 def shard_optimizer_states(
     optimizer: nnx.ModelAndOptimizer, replicated_sharding: NamedSharding
 ) -> None:
+    def _put(x):
+        try:
+            return jax.device_put(x, replicated_sharding)
+        except Exception:
+            return x
+
     model_state = nnx.state(optimizer.model)
-    model_sharded_state = jax.lax.with_sharding_constraint(
-        model_state, replicated_sharding
-    )
+    model_sharded_state = jax.tree.map(_put, model_state)
     nnx.update(optimizer.model, model_sharded_state)
+    
     optimizer_state = nnx.state(optimizer, nnx.optimizer.OptState)
-    optimizer_sharded_state = jax.lax.with_sharding_constraint(
-        optimizer_state, replicated_sharding
-    )
+    optimizer_sharded_state = jax.tree.map(_put, optimizer_state)
     nnx.update(optimizer, optimizer_sharded_state)
 
 
@@ -268,6 +289,7 @@ def build_dataloader(args: Args, data_dir: str, num_epochs: Optional[int] = None
         # The dataloader shards the dataset across all processes
         args.batch_size,
         *image_shape,
+        num_processes=jax.process_count(),
         num_workers=args.num_workers,
         prefetch_buffer_size=args.prefetch_buffer_size,
         seed=args.seed,
@@ -319,6 +341,7 @@ def restore_checkpoint_if_needed(
     checkpoint_manager: Optional[ocp.CheckpointManager],
     optimizer: nnx.ModelAndOptimizer,
     train_iterator: grain.DataLoaderIterator,
+    replicated_sharding: NamedSharding,
     val_iterator: Optional[grain.DataLoaderIterator],
     restore_step: Optional[int] = None,
 ) -> tuple[
@@ -330,10 +353,28 @@ def restore_checkpoint_if_needed(
         
     if args.restore_ckpt:
         assert checkpoint_manager is not None
-        abstract_optimizer = nnx.eval_shape(lambda: optimizer)
-        abstract_optimizer_state = nnx.state(abstract_optimizer)
+        optimizer_state = nnx.state(optimizer)
+        # Pre-shard the template
+        def _shard(x):
+            try:
+                return jax.device_put(x, replicated_sharding)
+            except Exception:
+                return x
+        optimizer_state = jax.tree.map(_shard, optimizer_state)
+
+        def _get_restore_args(leaf):
+            return ocp.args.StandardRestore(
+                fallback_sharding=replicated_sharding
+            )
+        
+        restore_args_tree = jax.tree.map(_get_restore_args, optimizer_state)
+
         restore_args = ocp.args.Composite(
-            model_state=ocp.args.PyTreeRestore(abstract_optimizer_state, partial_restore=True),  # type: ignore
+            model_state=ocp.args.PyTreeRestore(
+                item=optimizer_state, 
+                restore_args=restore_args_tree,
+                partial_restore=True
+            ),  # type: ignore
             train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
             )
         if restore_step:
@@ -417,11 +458,14 @@ def main(args: Args) -> None:
 
     # --- Restore checkpoint ---
     step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
-        args, checkpoint_manager, optimizer, train_iterator, val_iterator, args.restore_step
+        args, checkpoint_manager, optimizer, train_iterator, replicated_sharding, val_iterator, args.restore_step
     )
+    # Eagerly shard newly initialized states from restore
+    shard_optimizer_states(optimizer, replicated_sharding)
 
     # LPIPS evaluator
     lpips_evaluator = lpips_jax.LPIPSEvaluator(replicate=False, net='alexnet') # ['alexnet', 'vgg16']
+    freq_loss_fn = FocalFrequencyLoss(loss_weight=args.frequency_loss_weight, alpha=1.0)
 
     # --- Define loss and train step (close over args) ---
     def tokenizer_loss_fn(
@@ -456,16 +500,20 @@ def main(args: Args) -> None:
         lpips = lpips_evaluator(jax.lax.collapse(gt_masked, 0, 2),
                                 jax.lax.collapse(recon_masked, 0, 2)).mean()
 
+        # Frequency Loss
+        freq_loss = freq_loss_fn(outputs["recon"], gt)
+
         # RMS Normalization
         normalized_mse = model.mse_norm(mse, training=training)
         normalized_lpips = model.lpips_norm(lpips, training=training)
+        normalized_freq = model.freq_norm(freq_loss, training=training)
 
         gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
         recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
         psnr = jnp.asarray(pix.psnr(gt_clipped, recon)).mean()
         ssim = jnp.asarray(pix.ssim(gt_clipped, recon)).mean()
 
-        loss = normalized_mse + 0.3 * normalized_lpips
+        loss = normalized_mse + 0.2 * normalized_lpips + normalized_freq
 
         metrics = dict(
             mse=mse,
@@ -474,6 +522,7 @@ def main(args: Args) -> None:
             normalized_lpips=normalized_lpips,
             mse_rms=model.mse_norm.rms.get_value(),
             lpips_rms=model.lpips_norm.rms.get_value(),
+            frequency_loss=freq_loss,
             psnr=psnr,
             ssim=ssim,
             loss=loss,
@@ -756,5 +805,12 @@ def main(args: Args) -> None:
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
+
+    import tyro
     args = tyro.cli(Args)
     main(args)

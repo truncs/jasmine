@@ -211,8 +211,8 @@ class SpaceSelfAttentionModality(nnx.Module):
         S = int(self.modality_ids.shape[0])
 
         # Broadcast helpers
-        q_idx = jnp.arange(S)[:, None]       # (S,1)
-        k_idx = jnp.arange(S)[None, :]       # (1,S)
+        q_idx = np.arange(S)[:, None]       # (S,1)
+        k_idx = np.arange(S)[None, :]       # (1,S)
 
         is_q_lat = q_idx < self.n_latents     # (S,1) bool
         is_k_lat = k_idx < self.n_latents     # (1,S) bool
@@ -223,18 +223,18 @@ class SpaceSelfAttentionModality(nnx.Module):
 
         if self.mode == "encoder":
             # latents -> all; non-latents -> same modality only (no access to latents unless same modality==latent, which they aren't)
-            allow_lat_q = jnp.ones((S, S), dtype=bool)             # lat q attends to everything
+            allow_lat_q = np.ones((S, S), dtype=bool)             # lat q attends to everything
             allow_nonlat_q = same_mod                              # non-lat q attends within itself only
-            mask = jnp.where(is_q_lat, allow_lat_q, allow_nonlat_q)
+            mask = np.where(is_q_lat, allow_lat_q, allow_nonlat_q)
         elif self.mode == "decoder":
             # latents -> latents only; non-latents -> same modality OR latents
             allow_lat_q = is_k_lat                                  # lat q -> lat k only
-            allow_nonlat_q = jnp.logical_or(same_mod, is_k_lat)     # non-lat q -> same mod + latents
-            mask = jnp.where(is_q_lat, allow_lat_q, allow_nonlat_q)
+            allow_nonlat_q = np.logical_or(same_mod, is_k_lat)     # non-lat q -> same mod + latents
+            mask = np.where(is_q_lat, allow_lat_q, allow_nonlat_q)
         elif self.mode in ["wm_agent", "wm_agent_isolated"]:
             S = int(self.modality_ids.shape[0])
-            q_idx = jnp.arange(S)[:, None]   # (S,1)
-            k_idx = jnp.arange(S)[None, :]   # (1,S)
+            q_idx = np.arange(S)[:, None]   # (S,1)
+            k_idx = np.arange(S)[None, :]   # (1,S)
             q_mod = self.modality_ids[q_idx] # (S,1)
             k_mod = self.modality_ids[k_idx] # (1,S)
 
@@ -260,10 +260,10 @@ class SpaceSelfAttentionModality(nnx.Module):
             # Agent queries:
             #  - wm_agent: agent reads all (obs ∪ action ∪ agent)
             #  - wm_agent_isolated: agent reads nobody
-            allow_for_agent_q = jnp.where(
+            allow_for_agent_q = np.where(
                 self.mode == "wm_agent",
-                jnp.ones((S, S), dtype=bool),
-                jnp.zeros((S, S), dtype=bool)
+                np.ones((S, S), dtype=bool),
+                np.zeros((S, S), dtype=bool)
             )
 
             # Non-agent queries (route by query modality)
@@ -271,15 +271,15 @@ class SpaceSelfAttentionModality(nnx.Module):
             allow_for_obs_q    = (is_obs_k | is_action_k)                     # obs -> obs ∪ action    (1,S)
 
             # Build per-query row permissions with broadcasting from (1,S) to (S,S)
-            allow_nonagent = jnp.where(
+            allow_nonagent = np.where(
                 is_action_q, allow_for_action_q,
-                jnp.where(is_obs_q, allow_for_obs_q, jnp.zeros((S, S), dtype=bool))
+                np.where(is_obs_q, allow_for_obs_q, np.zeros((S, S), dtype=bool))
             )
 
             # Nobody can read agent keys except agent q
-            allow_nonagent = jnp.where(is_agent_k, False, allow_nonagent)
+            allow_nonagent = np.where(is_agent_k, False, allow_nonagent)
 
-            mask = jnp.where(is_agent_q, allow_for_agent_q, allow_nonagent)
+            mask = np.where(is_agent_q, allow_for_agent_q, allow_nonagent)
         else:
             raise ValueError(f"Unknown mode {self.mode}")
 
@@ -505,7 +505,6 @@ class BlockCausalTransformer(nnx.Module):
         return x
 
 
-
 class Encoder(nnx.Module):
     def __init__(
         self,
@@ -717,7 +716,9 @@ class Decoder(nnx.Module):
         return pred_btnd
 
 class ActionEncoder(nnx.Module):
-    def __init__(self, d_model: int, n_keyboard: int = 5, is_discrete: bool = True, *, rngs: nnx.Rngs):
+    def __init__(self, d_model: int, n_keyboard: int = 5,
+                 is_discrete: bool = True, dtype:
+                 Any = jnp.float32,*, rngs: nnx.Rngs):
         self.d_model = d_model
         self.n_keyboard = n_keyboard
         
@@ -727,7 +728,7 @@ class ActionEncoder(nnx.Module):
         if is_discrete:
             self.emb_key = nnx.Embed(n_keyboard, d_model, rngs=rngs)
         else:
-            self.emb_key = nnx.Linear(n_keyboard, d_model, rngs=rngs)
+            self.emb_key = nnx.Linear(n_keyboard, d_model, dtype=dtype, rngs=rngs)
 
     def __call__(
         self,
@@ -769,8 +770,8 @@ class Dynamics(nnx.Module):
         mlp_ratio: float = 4.0,
         time_every: int = 4,
         space_mode: str = "wm_agent_isolated",
+        dtype: Any = jnp.float32,
         use_flash_attention: bool = False,
-        is_action_discrete: bool = True,
         *,
         rngs: nnx.Rngs,
     ):
@@ -790,12 +791,24 @@ class Dynamics(nnx.Module):
 
         assert d_spatial % d_bottleneck == 0
         
-        self.spatial_proj = nnx.Linear(d_spatial, d_model, use_bias=True, rngs=rngs)
+        self.spatial_proj = nnx.Linear(
+            d_spatial,
+            d_model,
+            use_bias=True,
+            dtype=dtype,
+            rngs=rngs)
+
+        self.action_encoder = nnx.Linear(
+            d_spatial,
+            d_model,
+            use_bias=True,
+            dtype=dtype,
+            rngs=rngs
+        )
         
         key = rngs.params()
         self.register_tokens = nnx.Param(jax.random.normal(key, (n_register, d_model)) * 0.02)
         
-        self.action_encoder = ActionEncoder(d_model=d_model, rngs=rngs)
 
         # Two separate tokens for shortcut conditioning
         segments = [
@@ -824,25 +837,33 @@ class Dynamics(nnx.Module):
             time_every=time_every,
             latents_only_time=False,
             use_flash_attention=use_flash_attention,
+            dtype=dtype,
             rngs=rngs,
         )
 
         self.num_step_bins = int(math.log2(k_max)) + 1
-        self.step_embed = nnx.Embed(self.num_step_bins, d_model, rngs=rngs)
+        self.step_embed = nnx.Embed(
+            self.num_step_bins,
+            d_model,
+            dtype=dtype,
+            rngs=rngs
+        )
 
-        self.signal_embed = nnx.Embed(k_max + 1, d_model, rngs=rngs)
+        self.signal_embed = nnx.Embed(k_max + 1, d_model,
+                                      dtype=dtype, rngs=rngs)
         # flow_x_head init: kernel_init zeros.
         # nnx.Linear uses kernel_init kwarg.
         self.flow_x_head = nnx.Linear(
             d_model, d_spatial, use_bias=True, 
             kernel_init=nnx.initializers.zeros, 
             bias_init=nnx.initializers.zeros,
+            dtype=dtype,
             rngs=rngs
         )
 
     def __call__(
         self,
-        actions,             # (B,T)
+        actions,             # (B,T,N,D)
         step_idxs,           # (B,T)
         signal_idxs,         # (B,T)
         packed_enc_tokens,   # (B,T,n_s,d_spatial)
@@ -853,9 +874,9 @@ class Dynamics(nnx.Module):
         # --- 1) Project spatial tokens to model dimension
         spatial_tokens = self.spatial_proj(packed_enc_tokens) # (B, T, n_spatial, d_model)
 
-        # --- 2) Encode actions to d_model
-        action_tokens = self.action_encoder(actions)  # (B, T, N_a, d_model)
-
+        # -- 2) Prepare the action tokens
+        action_tokens = self.action_encoder(actions)
+        
         # --- 3) Prepare learned register tokens
         B, T = spatial_tokens.shape[:2]
         register_tokens = jnp.broadcast_to(

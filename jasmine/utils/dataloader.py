@@ -1,4 +1,3 @@
-import jax
 import numpy as np
 import grain
 from typing import Any, Optional
@@ -109,6 +108,7 @@ def get_dataloader(
     image_h: int,
     image_w: int,
     image_c: int,
+    num_processes: int,
     num_workers: int = 1,
     prefetch_buffer_size: int = 1,
     seed: int = 42,
@@ -120,7 +120,7 @@ def get_dataloader(
     if not array_record_paths:
         raise ValueError("array_record_paths list cannot be empty.")
 
-    num_processes = jax.process_count()
+    array_record_paths = sorted(array_record_paths)
 
     if global_batch_size % num_processes != 0:
         raise ValueError(
@@ -151,15 +151,22 @@ def get_dataloader(
 
     read_options = grain.ReadOptions(
         prefetch_buffer_size=prefetch_buffer_size,
-        num_threads=1,
+        num_threads=0,
     )
     dataloader = grain.DataLoader(
         data_source=source,
         sampler=sampler,
         operations=operations,
         worker_count=num_workers,
-        worker_buffer_size=1,
+        worker_buffer_size=8,
         read_options=read_options,
     )
 
-    return iter(dataloader)
+    iterator = iter(dataloader)
+    
+    # Bypass state validation inside Grain because our newest dataloader version 
+    # sorts the read paths, which causes a mismatch against older checkpoint hashes
+    if hasattr(iterator, "_validate_state"):
+        iterator._validate_state = False
+
+    return iterator

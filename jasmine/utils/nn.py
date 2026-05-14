@@ -629,6 +629,22 @@ def normalize(x: jax.Array) -> jax.Array:
     return x / (jnp.linalg.norm(x, ord=2, axis=-1, keepdims=True) + 1e-8)
 
 
+class MovingRMS(nnx.Module):
+    def __init__(self, momentum: float = 0.99):
+        self.momentum = momentum
+        self.rms = nnx.Variable(jnp.ones((), dtype=jnp.float32))
+
+    def __call__(self, x: jax.Array, training: bool = True) -> jax.Array:
+        if training:
+            # Update running RMS estimate: RMS = sqrt(E[x^2])
+            # For scalar loss, mean(square(x)) is just x^2
+            ms = jnp.mean(jnp.square(x))
+            self.rms.value = self.momentum * self.rms.get_value() + (1 - self.momentum) * jnp.sqrt(ms + 1e-8)
+        
+        # Normalize by stop-gradiented RMS to avoid differentiating through the moving average
+        return x / jax.lax.stop_gradient(jnp.maximum(self.rms.get_value(), 1e-8))
+
+
 class VectorQuantizer(nnx.Module):
     """
     Dimension keys:
