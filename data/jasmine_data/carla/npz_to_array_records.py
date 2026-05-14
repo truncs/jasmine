@@ -26,19 +26,19 @@ class Args:
     target_width: int = 64
     chunk_size: int = 160
     chunks_per_file: int = 100
-    fields: str = 'left_camera,action'
+    fields: str = 'left_camera,action,reward,route_map'
 
 
 def preprocess_npz(input_dir, original_fps,
                    target_fps, chunk_size, target_width, fields):
-    print(f"Processing PNGs in {input_dir}")
+    print(f"Processing npzs in {input_dir}")
     try:
         npz_files = sorted(
             [f for f in os.listdir(input_dir) if f.lower().endswith(".npz")],
         )
 
         if not npz_files:
-            print(f"No PNG files found in {input_dir}")
+            print(f"No npz files found in {input_dir}")
             return []
 
         # Downsample indices
@@ -60,7 +60,6 @@ def preprocess_npz(input_dir, original_fps,
             is_terminal = data['is_terminal']
             terminal_idx = np.where(is_terminal == True)[0]
             terminal_idx = terminal_idx + 1
-
 
             for field in fields:
                 chunk = np.split(data[field], terminal_idx)
@@ -95,10 +94,11 @@ def save_chunks(file_idx, chunks_per_file, output_dir, chunks):
             }
 
             for k, v in chunk_batch.items():
-                if len(v[idx].shape) == 3:
-                    chunk_record[key] = v[idx].tobytes()
+                
+                if len(v[idx].shape) == 4:
+                    chunk_record[k] = v[idx].tobytes()
                 else:
-                    chunk_record[key] = v[idx]
+                    chunk_record[k] = v[idx]
 
             writer.write(pickle.dumps(chunk_record))
         writer.close()
