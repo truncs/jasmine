@@ -1,10 +1,14 @@
 import os
 import numpy as np
+import pickle
+import multiprocessing as mp
+from collections import defaultdict
+from dataclasses import dataclass
+from array_record.python.array_record_module import ArrayRecordWriter
+
 from PIL import Image
 import tyro
-from dataclasses import dataclass
 import json
-import multiprocessing as mp
 from data.jasmine_data.utils import save_chunks
 
 
@@ -22,10 +26,11 @@ class Args:
     target_width: int = 64
     chunk_size: int = 160
     chunks_per_file: int = 100
+    fields: str = 'left_camera,actions,reward'
 
 
 def preprocess_npz(input_dir, original_fps,
-                   target_fps, chunk_size, target_width):
+                   target_fps, chunk_size, target_width, fields):
     print(f"Processing PNGs in {input_dir}")
     try:
         npz_files = sorted(
@@ -47,8 +52,8 @@ def preprocess_npz(input_dir, original_fps,
         selected_files = [npz_files[i] for i in selected_indices]
 
         # Load images
-        obs_chunks = []
-        act_chunks = []
+        chunks = defaultdict(list)
+
 
         for fname in selected_files:
             data = np.load(os.path.join(input_dir, fname))
@@ -56,37 +61,81 @@ def preprocess_npz(input_dir, original_fps,
             is_terminal = data['is_terminal']
             terminal_idx = np.where(is_terminal == True)[0]
             terminal_idx = terminal_idx + 1
-            obs_current_chunks = np.split(data['left_camera'], terminal_idx)
-            act_current_chunks = np.split(data['action'], terminal_idx)
 
-            obs_chunks.extend(obs_current_chunks)
-            act_chunks.extend(act_current_chunks)
 
-        return obs_chunks, act_chunks
+            for field in fields:
+                chunk = np.split(data[field], terminal_idx)
+                chunks[field].extend(chunk)
+
+        return chunks
     except Exception as e:
         print(f"Error processing {input_dir}: {e}")
-        return ([], [])
+        return chunks
+
+
+def save_chunks(file_idx, chunks_per_file, output_dir, chunks):
+    os.makedirs(output_dir, exist_ok=True)
+
+    metadata = []
+    key = chunks.keys()[0]
+    
+    while len(chunks[key]) >= chunks_per_file:
+
+        chunk_batch = {k: v[:chunks_per_file] for k, v in chunks.items()}
+        chunks = {k: v[chunks_per_file:] for k, v in chunks.items()}
+
+        episode_path = os.path.join(output_dir, f"data_{file_idx:04d}.array_record")
+        writer = ArrayRecordWriter(str(episode_path), "group_size:1")
+        seq_lens = []
+        for idx, chunk in enumerate(chunk_batch[key]):
+            seq_len = chunk.shape[0]
+            seq_lens.append(seq_len)
+
+            chunk_record = {
+                "sequence_length": seq_len,
+            }
+
+            for k, v in chunk_batch.items():
+                if len(v.shape) == 4:
+                    chunk_record[key] = v[idx].tobytes()
+                else:
+                    chunk_record[key] = v[idx]
+
+            writer.write(pickle.dumps(chunk_record))
+        writer.close()
+        file_idx += 1
+        metadata.append(
+            {
+                "path": episode_path,
+                "num_chunks": len(chunk_batch),
+                "avg_seq_len": np.mean(seq_lens),
+            }
+        )
+        print(f"Created {episode_path} with {len(chunk_batch)} video chunks")
+
+    return metadata, file_idx, chunks
 
 
 def save_split(pool_args, chunks_per_file, output_path):
     num_processes = mp.cpu_count()
     print(f"Number of processes: {num_processes}")
-    obs_chunks = []
-    act_chunks = []
+
+    chunks = defaultdict(list)
+    
     file_idx = 0
     results = []
     for bucket_idx in range(0, len(pool_args), num_processes):
-        args_batch = pool_args[bucket_idx : bucket_idx + num_processes]
+        args_batch = pool_args[bucket_idx:bucket_idx + num_processes]
         with mp.Pool(processes=num_processes) as pool:
             for chunk in pool.starmap(preprocess_npz, args_batch):
-                obs_chunks.extend(chunk[0])
-                act_chunks.extend(chunk[1])
+                for key, value in chunk.items():
+                    chunks[key].extend(value)
         results_batch, file_idx, chunks, _ = save_chunks(
-            file_idx, chunks_per_file, output_path, obs_chunks, act_chunks
+            file_idx, chunks_per_file, output_path, chunks
         )
         results.extend(results_batch)
 
-    if len(obs_chunks) > 0:
+    if len(chunks[chunks.keys()[0]]) > 0:
         print(
             f"Warning: Dropping {len(chunks)} chunks for consistent number of chunks per file.",
             "Consider changing the chunk_size and chunks_per_file parameters to prevent data-loss.",
@@ -114,6 +163,11 @@ def main():
     else:
         episodes = directories
 
+
+    assert args.fields is not None, 'Need to pass field names'
+
+    args.fields = args.fields.split(',')
+
     n_total = sum([len(os.listdir(episode)) for episode in episodes])
     n_train = round(n_total * args.train_ratio)
     n_val = round(n_total * args.val_ratio)
@@ -132,6 +186,7 @@ def main():
             args.target_fps,
             args.chunk_size,
             args.target_width,
+            args.fields,
         )
         n_frames = len(os.listdir(episode))
         if train_counter < n_train:

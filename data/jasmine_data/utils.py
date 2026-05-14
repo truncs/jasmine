@@ -4,7 +4,7 @@ import numpy as np
 from array_record.python.array_record_module import ArrayRecordWriter
 
 
-def save_chunks(file_idx, chunks_per_file, output_dir, obs_chunks, act_chunks=None):
+def save_chunks(file_idx, chunks_per_file, output_dir, obs_chunks, act_chunks=None, reward_chunks=None):
     os.makedirs(output_dir, exist_ok=True)
 
     metadata = []
@@ -15,6 +15,10 @@ def save_chunks(file_idx, chunks_per_file, output_dir, obs_chunks, act_chunks=No
         if act_chunks:
             act_chunk_batch = act_chunks[:chunks_per_file]
             act_chunks = act_chunks[chunks_per_file:]
+        if reward_chunks:
+            reward_chunk_batch = reward_chunks[:chunks_per_file]
+            reward_chunks = reward_chunks[chunks_per_file:]
+            
         episode_path = os.path.join(output_dir, f"data_{file_idx:04d}.array_record")
         writer = ArrayRecordWriter(str(episode_path), "group_size:1")
         seq_lens = []
@@ -30,6 +34,12 @@ def save_chunks(file_idx, chunks_per_file, output_dir, obs_chunks, act_chunks=No
                     act_chunk_batch[idx]
                 ), f"Observation data length and action sequence length do not match: {len(chunk)} != {len(act_chunk_batch[idx])}"
                 chunk_record["actions"] = act_chunk_batch[idx]
+            if reward_chunk_batch:
+                assert len(chunk) == len(
+                    reward_chunk_batch[idx]
+                ), f"Observation data length and action sequence length do not match: {len(chunk)} != {len(reward_chunk_batch[idx])}"
+                chunk_record["reward"] = reward_chunk_batch[idx]
+                
             writer.write(pickle.dumps(chunk_record))
         writer.close()
         file_idx += 1
