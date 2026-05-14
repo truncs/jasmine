@@ -26,7 +26,7 @@ class Args:
     target_width: int = 64
     chunk_size: int = 160
     chunks_per_file: int = 100
-    fields: str = 'left_camera,actions,reward'
+    fields: str = 'left_camera,action'
 
 
 def preprocess_npz(input_dir, original_fps,
@@ -54,7 +54,6 @@ def preprocess_npz(input_dir, original_fps,
         # Load images
         chunks = defaultdict(list)
 
-
         for fname in selected_files:
             data = np.load(os.path.join(input_dir, fname))
 
@@ -77,7 +76,7 @@ def save_chunks(file_idx, chunks_per_file, output_dir, chunks):
     os.makedirs(output_dir, exist_ok=True)
 
     metadata = []
-    key = chunks.keys()[0]
+    key = list(chunks.keys())[0]
     
     while len(chunks[key]) >= chunks_per_file:
 
@@ -96,7 +95,7 @@ def save_chunks(file_idx, chunks_per_file, output_dir, chunks):
             }
 
             for k, v in chunk_batch.items():
-                if len(v.shape) == 4:
+                if len(v[idx].shape) == 3:
                     chunk_record[key] = v[idx].tobytes()
                 else:
                     chunk_record[key] = v[idx]
@@ -107,11 +106,11 @@ def save_chunks(file_idx, chunks_per_file, output_dir, chunks):
         metadata.append(
             {
                 "path": episode_path,
-                "num_chunks": len(chunk_batch),
+                "num_chunks": len(chunk_batch[key]),
                 "avg_seq_len": np.mean(seq_lens),
             }
         )
-        print(f"Created {episode_path} with {len(chunk_batch)} video chunks")
+        print(f"Created {episode_path} with {len(chunk_batch[key])} video chunks")
 
     return metadata, file_idx, chunks
 
@@ -130,12 +129,12 @@ def save_split(pool_args, chunks_per_file, output_path):
             for chunk in pool.starmap(preprocess_npz, args_batch):
                 for key, value in chunk.items():
                     chunks[key].extend(value)
-        results_batch, file_idx, chunks, _ = save_chunks(
+        results_batch, file_idx, chunks = save_chunks(
             file_idx, chunks_per_file, output_path, chunks
         )
         results.extend(results_batch)
 
-    if len(chunks[chunks.keys()[0]]) > 0:
+    if len(chunks) > 0 and len(chunks[list(chunks.keys())[0]]) > 0:
         print(
             f"Warning: Dropping {len(chunks)} chunks for consistent number of chunks per file.",
             "Consider changing the chunk_size and chunks_per_file parameters to prevent data-loss.",
