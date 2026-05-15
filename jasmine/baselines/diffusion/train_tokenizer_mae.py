@@ -11,7 +11,7 @@ if multiprocessing.current_process().name != "MainProcess":
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.98")
 
 from dataclasses import dataclass, field
-from typing import cast, Optional
+from typing import cast, Optional, Tuple
 
 import einops
 import itertools
@@ -46,6 +46,9 @@ from jasmine.utils.train_utils import (
 
 @dataclass
 class Args:
+    # General
+    video_key: str = 'videos'
+    schema: dict[str, Tuple[int, ...]] = None
     # Experiment
     num_steps: int = 300_000
     seed: int = 0
@@ -294,6 +297,7 @@ def build_dataloader(args: Args, data_dir: str, num_epochs: Optional[int] = None
         prefetch_buffer_size=args.prefetch_buffer_size,
         seed=args.seed,
         num_epochs=num_epochs,
+        schema=args.schema,
     )
     return grain_dataloader
 
@@ -595,7 +599,7 @@ def main(args: Args) -> None:
     dataloader_train = (
         {
             "videos": jax.make_array_from_process_local_data(
-                videos_sharding, elem["videos"]
+                videos_sharding, elem[args.video_key]
             ),
         }
         for elem in train_iterator
@@ -605,7 +609,7 @@ def main(args: Args) -> None:
         dataloader_val = (
             {
                 "videos": jax.make_array_from_process_local_data(
-                    videos_sharding, elem["videos"]
+                    videos_sharding, elem[args.video_key]
                 ),
             }
             for elem in val_iterator
