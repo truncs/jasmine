@@ -45,6 +45,7 @@ class Args:
     # General
     video_key: str = 'videos'
     action_key: str = 'action'
+    schema: dict[str, Tuple[int, ...]] = None
     # Experiment
     num_steps: int = 200_000
     seed: int = 0
@@ -244,6 +245,7 @@ def build_dataloader(args: Args, data_dir: str, num_workers: int, prefetch_buffe
         prefetch_buffer_size=prefetch_buffer_size,
         seed=args.seed,
         num_epochs=num_epochs,
+        schema=args.schema
     )
     return grain_dataloader
 
