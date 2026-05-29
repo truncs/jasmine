@@ -12,6 +12,8 @@ def save_chunks(file_idx, chunks_per_file, output_dir, obs_chunks, act_chunks=No
         chunk_batch = obs_chunks[:chunks_per_file]
         obs_chunks = obs_chunks[chunks_per_file:]
         act_chunk_batch = None
+        reward_chunk_batch = None
+
         if act_chunks:
             act_chunk_batch = act_chunks[:chunks_per_file]
             act_chunks = act_chunks[chunks_per_file:]
