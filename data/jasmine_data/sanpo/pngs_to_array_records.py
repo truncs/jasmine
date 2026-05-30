@@ -22,12 +22,13 @@ class Args:
     target_width: int = 640
     chunk_size: int = 160
     chunks_per_file: int = 100
+    patch_size: int = 16
     camera_type: str = 'camera_chest'
     camera_orientation: str = 'left'
     img_type: str = 'video_frames'
 
 
-def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_width):
+def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_width, patch_size):
     print(f"Processing PNGs in {input_dir}")
     try:
         png_files = sorted(
@@ -57,6 +58,9 @@ def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_widt
             w, h = img.size  # PIL gives (width, height)
             if w != target_width:
                 target_height = int(round(h * (target_width / float(w))))
+
+                if target_height % patch_size != 0:
+                    target_height = (target_height // patch_size + 1) * patch_size
                 resample_filter = Image.LANCZOS
 
                 img = img.resize(
@@ -150,6 +154,7 @@ def main():
             args.target_fps,
             args.chunk_size,
             args.target_width,
+            args.patch_size,
         )
         n_frames = len(os.listdir(episode))
         if train_counter < n_train:
