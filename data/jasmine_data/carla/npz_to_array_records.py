@@ -1,15 +1,60 @@
 import os
 import numpy as np
-import pickle
-import multiprocessing as mp
-from collections import defaultdict
-from dataclasses import dataclass
-from array_record.python.array_record_module import ArrayRecordWriter
-
-from PIL import Image
 import tyro
 import json
-from data.jasmine_data.utils import save_chunks
+import multiprocessing as mp
+import pickle
+from array_record.python.array_record_module import ArrayRecordWriter
+from dataclasses import dataclass
+from PIL import Image
+
+
+def save_chunks(file_idx, chunks_per_file, output_dir, obs_chunks, act_chunks=None, route_map_chunks=None, first_person_chunks=None):
+    os.makedirs(output_dir, exist_ok=True)
+
+    metadata = []
+    while len(obs_chunks) >= chunks_per_file:
+        chunk_batch = obs_chunks[:chunks_per_file]
+        obs_chunks = obs_chunks[chunks_per_file:]
+        route_map_batch = route_map_chunks[:chunks_per_file]
+        route_map_chunks = route_map_chunks[chunks_per_file:]
+        first_person_batch = first_person_chunks[:chunks_per_file]
+        first_person_chunks = first_person_chunks[chunks_per_file:]
+
+        act_chunk_batch = None
+        if act_chunks:
+            act_chunk_batch = act_chunks[:chunks_per_file]
+            act_chunks = act_chunks[chunks_per_file:]
+        episode_path = os.path.join(output_dir, f"data_{file_idx:04d}.array_record")
+        writer = ArrayRecordWriter(str(episode_path), "group_size:1")
+        seq_lens = []
+        for idx, chunk in enumerate(chunk_batch):
+            seq_len = chunk.shape[0]
+            seq_lens.append(seq_len)
+            chunk_record = {
+                "raw_video": chunk.tobytes(),
+                "sequence_length": seq_len,
+                "route_map": route_map_batch[idx].tobytes(),
+                "first_person": first_person_batch[idx].tobytes(),
+            }
+            if act_chunk_batch:
+                assert len(chunk) == len(
+                    act_chunk_batch[idx]
+                ), f"Observation data length and action sequence length do not match: {len(chunk)} != {len(act_chunk_batch[idx])}"
+                chunk_record["actions"] = act_chunk_batch[idx]
+            writer.write(pickle.dumps(chunk_record))
+        writer.close()
+        file_idx += 1
+        metadata.append(
+            {
+                "path": episode_path,
+                "num_chunks": len(chunk_batch),
+                "avg_seq_len": np.mean(seq_lens),
+            }
+        )
+        print(f"Created {episode_path} with {len(chunk_batch)} video chunks")
+
+    return metadata, file_idx, obs_chunks, act_chunks
 
 
 @dataclass
@@ -26,11 +71,10 @@ class Args:
     target_width: int = 64
     chunk_size: int = 160
     chunks_per_file: int = 100
-    fields: str = 'left_camera,actions,reward'
 
 
 def preprocess_npz(input_dir, original_fps,
-                   target_fps, chunk_size, target_width, fields):
+                   target_fps, chunk_size, target_width):
     print(f"Processing PNGs in {input_dir}")
     try:
         npz_files = sorted(
@@ -52,90 +96,59 @@ def preprocess_npz(input_dir, original_fps,
         selected_files = [npz_files[i] for i in selected_indices]
 
         # Load images
-        chunks = defaultdict(list)
-
+        obs_chunks = []
+        route_map_chunks = []
+        first_person_chunks = []
+        act_chunks = []
 
         for fname in selected_files:
-            data = np.load(os.path.join(input_dir, fname))
+            abs_fname = os.path.join(input_dir, fname)
+            print(f'Processing file: {abs_fname}')
+            data = np.load(abs_fname)
 
             is_terminal = data['is_terminal']
             terminal_idx = np.where(is_terminal == True)[0]
             terminal_idx = terminal_idx + 1
+            obs_current_chunks = np.split(data['left_camera'], terminal_idx)
+            route_map_chunk = np.split(data['route_map'], terminal_idx)
+            first_person_chunk = np.split(data['first_person'], terminal_idx)
+            act_current_chunks = np.split(data['action'], terminal_idx)
 
+            obs_chunks.extend(obs_current_chunks)
+            act_chunks.extend(act_current_chunks)
+            route_map_chunks.extend(route_map_chunk)
+            first_person_chunks.extend(first_person_chunk)
 
-            for field in fields:
-                chunk = np.split(data[field], terminal_idx)
-                chunks[field].extend(chunk)
-
-        return chunks
+            print(f'Chunks for file {abs_fname} are {terminal_idx}')
+        return obs_chunks, act_chunks, route_map_chunks, first_person_chunks
     except Exception as e:
         print(f"Error processing {input_dir}: {e}")
-        return chunks
-
-
-def save_chunks(file_idx, chunks_per_file, output_dir, chunks):
-    os.makedirs(output_dir, exist_ok=True)
-
-    metadata = []
-    key = chunks.keys()[0]
-    
-    while len(chunks[key]) >= chunks_per_file:
-
-        chunk_batch = {k: v[:chunks_per_file] for k, v in chunks.items()}
-        chunks = {k: v[chunks_per_file:] for k, v in chunks.items()}
-
-        episode_path = os.path.join(output_dir, f"data_{file_idx:04d}.array_record")
-        writer = ArrayRecordWriter(str(episode_path), "group_size:1")
-        seq_lens = []
-        for idx, chunk in enumerate(chunk_batch[key]):
-            seq_len = chunk.shape[0]
-            seq_lens.append(seq_len)
-
-            chunk_record = {
-                "sequence_length": seq_len,
-            }
-
-            for k, v in chunk_batch.items():
-                if len(v.shape) == 4:
-                    chunk_record[key] = v[idx].tobytes()
-                else:
-                    chunk_record[key] = v[idx]
-
-            writer.write(pickle.dumps(chunk_record))
-        writer.close()
-        file_idx += 1
-        metadata.append(
-            {
-                "path": episode_path,
-                "num_chunks": len(chunk_batch),
-                "avg_seq_len": np.mean(seq_lens),
-            }
-        )
-        print(f"Created {episode_path} with {len(chunk_batch)} video chunks")
-
-    return metadata, file_idx, chunks
+        return ([], [], [], [])
 
 
 def save_split(pool_args, chunks_per_file, output_path):
     num_processes = mp.cpu_count()
     print(f"Number of processes: {num_processes}")
-
-    chunks = defaultdict(list)
-    
+    obs_chunks = []
+    act_chunks = []
+    route_map_chunks = []
+    first_person_chunks = []
     file_idx = 0
     results = []
     for bucket_idx in range(0, len(pool_args), num_processes):
-        args_batch = pool_args[bucket_idx:bucket_idx + num_processes]
+        args_batch = pool_args[bucket_idx : bucket_idx + num_processes]
         with mp.Pool(processes=num_processes) as pool:
             for chunk in pool.starmap(preprocess_npz, args_batch):
-                for key, value in chunk.items():
-                    chunks[key].extend(value)
+                obs_chunks.extend(chunk[0])
+                act_chunks.extend(chunk[1])
+                route_map_chunks.extend(chunk[2])
+                first_person_chunks.extend(chunk[3])
         results_batch, file_idx, chunks, _ = save_chunks(
-            file_idx, chunks_per_file, output_path, chunks
+            file_idx, chunks_per_file, output_path, obs_chunks, act_chunks, route_map_chunks, first_person_chunks,
         )
         results.extend(results_batch)
 
-    if len(chunks[chunks.keys()[0]]) > 0:
+    if len(obs_chunks) > 0:
         print(
             f"Warning: Dropping {len(chunks)} chunks for consistent number of chunks per file.",
             "Consider changing the chunk_size and chunks_per_file parameters to prevent data-loss.",
@@ -163,11 +176,6 @@ def main():
     else:
         episodes = directories
 
-
-    assert args.fields is not None, 'Need to pass field names'
-
-    args.fields = args.fields.split(',')
-
     n_total = sum([len(os.listdir(episode)) for episode in episodes])
     n_train = round(n_total * args.train_ratio)
     n_val = round(n_total * args.val_ratio)
@@ -186,7 +194,6 @@ def main():
             args.target_fps,
             args.chunk_size,
             args.target_width,
-            args.fields,
         )
         n_frames = len(os.listdir(episode))
         if train_counter < n_train:
