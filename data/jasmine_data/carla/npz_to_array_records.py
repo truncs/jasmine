@@ -66,7 +66,7 @@ class Args:
     val_ratio: float = 0.1
     test_ratio: float = 0.1
     multigame: bool = False
-    original_fps: int = 60
+    original_fps: int = 10
     target_fps: int = 10
     target_width: int = 64
     chunk_size: int = 160
