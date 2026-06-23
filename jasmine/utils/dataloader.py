@@ -1,6 +1,6 @@
 import numpy as np
 import grain
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 import pickle
 
 
@@ -46,12 +46,14 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
     A Grain Transformation that combines parsing, slicing, and normalizing.
     """
 
-    def __init__(self, seq_len: int, image_h: int, image_w: int, image_c: int):
+    def __init__(self, seq_len: int, image_h: int, image_w: int,
+                 image_c: int, schema: dict[str, Tuple]):
         """Initializes the transformation with processing parameters."""
         self.seq_len = seq_len
         self.image_h = image_h
         self.image_w = image_w
         self.image_c = image_c
+        self.schema = schema
 
     def random_map(self, element: dict, rng: np.random.Generator) -> Any:
         """
@@ -68,15 +70,28 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
         """
         assert isinstance(element, bytes)
         element = pickle.loads(element)
+        seq_len = element['sequence_length']
 
         video_shape = (
-            element["sequence_length"],
+            seq_len,
             self.image_h,
             self.image_w,
             self.image_c,
         )
-        episode_tensor = np.frombuffer(element["raw_video"], dtype=np.uint8)
-        episode_tensor = episode_tensor.reshape(video_shape)
+
+        data_dict = {}
+        
+        for k, v in self.schema.items():
+            if len(v) == 3:
+                episode_tensor = np.frombuffer(element[k], dtype=np.uint8)
+                try:
+                    episode_tensor = episode_tensor.reshape([seq_len] + list(v))
+                except:
+                    print(k)
+            else:
+                episode_tensor = np.array(element[k])
+
+            data_dict[k] = episode_tensor
 
         current_episode_len = episode_tensor.shape[0]
         if current_episode_len < self.seq_len:
@@ -87,16 +102,10 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
             )
 
         max_start_idx = current_episode_len - self.seq_len
-
         start_idx = rng.integers(0, max_start_idx + 1)
 
-        seq = episode_tensor[start_idx : start_idx + self.seq_len]
-
-        data_dict = {"videos": seq}
-        if "actions" in element.keys():
-            actions_tensor = np.array(element["actions"])
-            actions = actions_tensor[start_idx : start_idx + self.seq_len]
-            data_dict["actions"] = actions
+        for k, v in data_dict.items():
+            data_dict[k] = v[start_idx:start_idx + self.seq_len]
 
         return data_dict
 
@@ -112,6 +121,7 @@ def get_dataloader(
     num_workers: int = 1,
     prefetch_buffer_size: int = 1,
     seed: int = 42,
+    schema: dict[str, Tuple] = None,
     num_epochs: Optional[int] = None,
 ):
     """
@@ -144,7 +154,8 @@ def get_dataloader(
             seq_len=seq_len, image_h=image_h, image_w=image_w, image_c=image_c
         ),
         ProcessEpisodeAndSlice(
-            seq_len=seq_len, image_h=image_h, image_w=image_w, image_c=image_c
+            seq_len=seq_len, image_h=image_h, image_w=image_w, image_c=image_c,
+            schema=schema
         ),
         grain.transforms.Batch(batch_size=per_process_batch_size, drop_remainder=True),
     ]

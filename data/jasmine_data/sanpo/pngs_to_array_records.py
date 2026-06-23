@@ -1,14 +1,10 @@
 import os
 import numpy as np
-import pickle
-import multiprocessing as mp
-from collections import defaultdict
-from dataclasses import dataclass
-from array_record.python.array_record_module import ArrayRecordWriter
-
 from PIL import Image
 import tyro
+from dataclasses import dataclass
 import json
+import multiprocessing as mp
 from data.jasmine_data.utils import save_chunks
 
 
@@ -23,88 +19,93 @@ class Args:
     multigame: bool = False
     original_fps: int = 10
     target_fps: int = 10
-    target_width: int = 64
+    target_width: int = 640
     chunk_size: int = 160
     chunks_per_file: int = 100
-    fields: str = 'left_camera,action,reward,route_map'
+    patch_size: int = 16
+    camera_type: str = 'camera_chest'
+    camera_orientation: str = 'left'
+    img_type: str = 'video_frames'
 
 
-def preprocess_npz(input_dir, original_fps,
-                   target_fps, chunk_size, target_width, fields):
-    print(f"Processing npzs in {input_dir}")
+def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_width, patch_size):
+    print(f"Processing PNGs in {input_dir}")
     try:
-        npz_files = sorted(
-            [f for f in os.listdir(input_dir) if f.lower().endswith(".npz")],
+        png_files = sorted(
+            [f for f in os.listdir(input_dir) if f.lower().endswith(".png")],
+            key=lambda x: int(os.path.splitext(x)[0]),
         )
 
-        if not npz_files:
-            print(f"No npz files found in {input_dir}")
+        if not png_files:
+            print(f"No PNG files found in {input_dir}")
             return []
 
         # Downsample indices
-        n_total = len(npz_files)
+        n_total = len(png_files)
         if original_fps == target_fps:
             selected_indices = np.arange(n_total)
         else:
             n_target = int(np.floor(n_total * target_fps / original_fps))
             selected_indices = np.linspace(0, n_total - 1, n_target, dtype=int)
 
-        selected_files = [npz_files[i] for i in selected_indices]
+        selected_files = [png_files[i] for i in selected_indices]
 
         # Load images
-        obs_chunks = []
-        route_map_chunks = []
-        first_person_chunks = []
-        act_chunks = []
-
+        chunks = []
+        frames = []
         for fname in selected_files:
-            abs_fname = os.path.join(input_dir, fname)
-            print(f'Processing file: {abs_fname}')
-            data = np.load(abs_fname)
+            img = Image.open(os.path.join(input_dir, fname)).convert("RGB")
+            w, h = img.size  # PIL gives (width, height)
+            if w != target_width:
+                target_height = int(round(h * (target_width / float(w))))
 
-            is_terminal = data['is_terminal']
-            terminal_idx = np.where(is_terminal == True)[0]
-            terminal_idx = terminal_idx + 1
-            obs_current_chunks = np.split(data['left_camera'], terminal_idx)
-            route_map_chunk = np.split(data['route_map'], terminal_idx)
-            first_person_chunk = np.split(data['first_person'], terminal_idx)
-            act_current_chunks = np.split(data['action'], terminal_idx)
+                if target_height % patch_size != 0:
+                    target_height = (target_height // patch_size + 1) * patch_size
+                resample_filter = Image.LANCZOS
 
-            obs_chunks.extend(obs_current_chunks)
-            act_chunks.extend(act_current_chunks)
-            route_map_chunks.extend(route_map_chunk)
-            first_person_chunks.extend(first_person_chunk)
+                img = img.resize(
+                    (target_width, target_height), resample=resample_filter
+                )
+            frames.append(np.array(img))
+            if len(frames) == chunk_size:
+                chunks.append(frames)
+                frames = []
 
-            print(f'Chunks for file {abs_fname} are {terminal_idx}')
-        return obs_chunks, act_chunks, route_map_chunks, first_person_chunks
+        if len(frames) < chunk_size:
+            print(
+                f"Warning: Inconsistent chunk_sizes. Episode has {len(frames)} frames, "
+                f"which is smaller than the requested chunk_size: {chunk_size}. "
+                "This might lead to performance degradation during training."
+            )
+
+        if w != target_width:
+            print(f'Resize image {w}x{h} to {target_width}x{target_height}')
+        chunks.append(frames)
+        chunks = [np.stack(chunk, axis=0) for chunk in chunks]
+
+        return chunks
     except Exception as e:
         print(f"Error processing {input_dir}: {e}")
-        return ([], [], [], [])
+        return []
 
 
 def save_split(pool_args, chunks_per_file, output_path):
     num_processes = mp.cpu_count()
     print(f"Number of processes: {num_processes}")
-    obs_chunks = []
-    act_chunks = []
-    route_map_chunks = []
-    first_person_chunks = []
+    chunks = []
     file_idx = 0
     results = []
     for bucket_idx in range(0, len(pool_args), num_processes):
-        args_batch = pool_args[bucket_idx:bucket_idx + num_processes]
+        args_batch = pool_args[bucket_idx : bucket_idx + num_processes]
         with mp.Pool(processes=num_processes) as pool:
-            for chunk in pool.starmap(preprocess_npz, args_batch):
-                obs_chunks.extend(chunk[0])
-                act_chunks.extend(chunk[1])
-                route_map_chunks.extend(chunk[2])
-                first_person_chunks.extend(chunk[3])
+            for episode_chunks in pool.starmap(preprocess_pngs, args_batch):
+                chunks.extend(episode_chunks)
         results_batch, file_idx, chunks, _ = save_chunks(
-            file_idx, chunks_per_file, output_path, obs_chunks, act_chunks, route_map_chunks, first_person_chunks,
+            file_idx, chunks_per_file, output_path, chunks
         )
         results.extend(results_batch)
 
-    if len(chunks) > 0 and len(chunks[list(chunks.keys())[0]]) > 0:
+    if len(chunks) > 0:
         print(
             f"Warning: Dropping {len(chunks)} chunks for consistent number of chunks per file.",
             "Consider changing the chunk_size and chunks_per_file parameters to prevent data-loss.",
@@ -121,9 +122,12 @@ def main():
     assert np.isclose(total_ratio, 1.0), "Ratios must sum to 1.0"
 
     directories = [
-        os.path.join(args.input_path, d)
+        os.path.join(args.input_path, d, args.camera_type,
+                     args.camera_orientation, args.img_type)
         for d in os.listdir(args.input_path)
-        if os.path.isdir(os.path.join(args.input_path, d))
+        if os.path.isdir(os.path.join(args.input_path, d,
+                                      args.camera_type, args.camera_orientation,
+                                      args.img_type))
     ]
     if args.multigame:
         episodes = [
@@ -131,11 +135,6 @@ def main():
         ]
     else:
         episodes = directories
-
-
-    assert args.fields is not None, 'Need to pass field names'
-
-    args.fields = args.fields.split(',')
 
     n_total = sum([len(os.listdir(episode)) for episode in episodes])
     n_train = round(n_total * args.train_ratio)
@@ -155,7 +154,7 @@ def main():
             args.target_fps,
             args.chunk_size,
             args.target_width,
-            args.fields,
+            args.patch_size,
         )
         n_frames = len(os.listdir(episode))
         if train_counter < n_train:
