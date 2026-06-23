@@ -21,7 +21,7 @@ class Args:
     val_ratio: float = 0.1
     test_ratio: float = 0.1
     multigame: bool = False
-    original_fps: int = 60
+    original_fps: int = 10
     target_fps: int = 10
     target_width: int = 64
     chunk_size: int = 160
@@ -52,85 +52,55 @@ def preprocess_npz(input_dir, original_fps,
         selected_files = [npz_files[i] for i in selected_indices]
 
         # Load images
-        chunks = defaultdict(list)
+        obs_chunks = []
+        route_map_chunks = []
+        first_person_chunks = []
+        act_chunks = []
 
         for fname in selected_files:
-            data = np.load(os.path.join(input_dir, fname))
+            abs_fname = os.path.join(input_dir, fname)
+            print(f'Processing file: {abs_fname}')
+            data = np.load(abs_fname)
 
             is_terminal = data['is_terminal']
             terminal_idx = np.where(is_terminal == True)[0]
             terminal_idx = terminal_idx + 1
+            obs_current_chunks = np.split(data['left_camera'], terminal_idx)
+            route_map_chunk = np.split(data['route_map'], terminal_idx)
+            first_person_chunk = np.split(data['first_person'], terminal_idx)
+            act_current_chunks = np.split(data['action'], terminal_idx)
 
-            for field in fields:
-                chunk = np.split(data[field], terminal_idx)
-                chunks[field].extend(chunk)
+            obs_chunks.extend(obs_current_chunks)
+            act_chunks.extend(act_current_chunks)
+            route_map_chunks.extend(route_map_chunk)
+            first_person_chunks.extend(first_person_chunk)
 
-        return chunks
+            print(f'Chunks for file {abs_fname} are {terminal_idx}')
+        return obs_chunks, act_chunks, route_map_chunks, first_person_chunks
     except Exception as e:
         print(f"Error processing {input_dir}: {e}")
-        return chunks
-
-
-def save_chunks(file_idx, chunks_per_file, output_dir, chunks):
-    os.makedirs(output_dir, exist_ok=True)
-
-    metadata = []
-    key = list(chunks.keys())[0]
-    
-    while len(chunks[key]) >= chunks_per_file:
-
-        chunk_batch = {k: v[:chunks_per_file] for k, v in chunks.items()}
-        chunks = {k: v[chunks_per_file:] for k, v in chunks.items()}
-
-        episode_path = os.path.join(output_dir, f"data_{file_idx:04d}.array_record")
-        writer = ArrayRecordWriter(str(episode_path), "group_size:1")
-        seq_lens = []
-        for idx, chunk in enumerate(chunk_batch[key]):
-            seq_len = chunk.shape[0]
-            seq_lens.append(seq_len)
-
-            chunk_record = {
-                "sequence_length": seq_len,
-            }
-
-            for k, v in chunk_batch.items():
-                
-                if len(v[idx].shape) == 4:
-                    chunk_record[k] = v[idx].tobytes()
-                else:
-                    chunk_record[k] = v[idx]
-
-            writer.write(pickle.dumps(chunk_record))
-        writer.close()
-        file_idx += 1
-        metadata.append(
-            {
-                "path": episode_path,
-                "num_chunks": len(chunk_batch[key]),
-                "avg_seq_len": np.mean(seq_lens),
-            }
-        )
-        print(f"Created {episode_path} with {len(chunk_batch[key])} video chunks")
-
-    return metadata, file_idx, chunks
+        return ([], [], [], [])
 
 
 def save_split(pool_args, chunks_per_file, output_path):
     num_processes = mp.cpu_count()
     print(f"Number of processes: {num_processes}")
-
-    chunks = defaultdict(list)
-    
+    obs_chunks = []
+    act_chunks = []
+    route_map_chunks = []
+    first_person_chunks = []
     file_idx = 0
     results = []
     for bucket_idx in range(0, len(pool_args), num_processes):
         args_batch = pool_args[bucket_idx:bucket_idx + num_processes]
         with mp.Pool(processes=num_processes) as pool:
             for chunk in pool.starmap(preprocess_npz, args_batch):
-                for key, value in chunk.items():
-                    chunks[key].extend(value)
-        results_batch, file_idx, chunks = save_chunks(
-            file_idx, chunks_per_file, output_path, chunks
+                obs_chunks.extend(chunk[0])
+                act_chunks.extend(chunk[1])
+                route_map_chunks.extend(chunk[2])
+                first_person_chunks.extend(chunk[3])
+        results_batch, file_idx, chunks, _ = save_chunks(
+            file_idx, chunks_per_file, output_path, obs_chunks, act_chunks, route_map_chunks, first_person_chunks,
         )
         results.extend(results_batch)
 

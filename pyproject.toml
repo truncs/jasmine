@@ -15,7 +15,6 @@ dependencies = [
   "pre-commit>=4.2.0",
   "pillow>=11.3.0",
   "lpips-jax>=0.1.0",
-  "matplotlib>=3.10.9",
 ]
 
 [build-system]

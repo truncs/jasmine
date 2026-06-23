@@ -46,6 +46,7 @@ class Args:
     video_key: str = 'videos'
     action_key: str = 'action'
     schema: dict[str, Tuple[int, ...]] = None
+
     # Experiment
     num_steps: int = 200_000
     seed: int = 0
